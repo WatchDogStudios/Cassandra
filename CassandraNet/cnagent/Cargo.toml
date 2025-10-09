@@ -1,0 +1,22 @@
+[package]
+name = "cnagent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["WD Studios L.L.C."]
+
+[dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread","macros","signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cncore = { path = "../core" }
+tonic = { version = "0.12", features = ["transport"] }
+cnproto = { path = "../cnproto" }
+sysinfo = "0.30"
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = []

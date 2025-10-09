@@ -1,0 +1,13 @@
+[package]
+name = "cnsdk_c"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "cassandra_c"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+cncore = { path = "../core" }
+libc = "0.2"

@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+  "cnbackend",
+  "cnlibfrontend",
+  "cnclient",
+
+  #Internal
+  "cncommon",
+  "core",
+  "gateway",
+  "cnproto",
+  "cnagent"
+  ,"cnsdk_c"
+]
+
+[workspace.metadata.spellcheck]
+config = "spellcheck.toml"
+
+[package]
+name = "cassandra_net"
+version = "0.1.0"
+edition = "2021"
+authors = ["JailbreakPapa", "RamenG0D"]
+homepage = "https://github.com/WatchDogStudios/CassandraNet"
+include = [
+  "cnbackend/**",
+  "cnlibfrontend/**",
+  "cnclient/**",
+  "cncommon/**",
+  "core/**",
+  "gateway/**",
+  "cnproto/**",
+  "cnagent/**"
+  ,"cnsdk_c/**"
+]
+
+[dev-dependencies]
+# dev-dependencies are dependencies that are only used for development / tests
+# They are not included in the final build
+cncommon = { path = "cncommon" }
+cnbackend = { path = "cnbackend" }
+cnlibfrontend = { path = "cnlibfrontend" }
+cnclient = { path = "cnclient" }
+
+[dependencies]
+tokio = "1.47.1"

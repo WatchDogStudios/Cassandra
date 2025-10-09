@@ -1,0 +1,39 @@
+syntax = "proto3";
+package cassandra.agent.v1;
+
+// Agent registration request sent once at startup.
+message RegisterAgentRequest {
+  string node_id = 1;         // provided by agent (uuid or generated)
+  string hostname = 2;        // host name
+  string os = 3;              // OS identifier
+  string arch = 4;            // CPU architecture
+  uint32 cpu_cores = 5;       // logical core count
+  uint64 memory_bytes = 6;    // total memory
+  string secret = 7;          // bootstrap secret/token
+}
+
+message RegisterAgentResponse {
+  string assigned_id = 1;     // canonical id assigned by server
+  string session_token = 2;   // short lived session token (jwt placeholder)
+  uint32 heartbeat_interval_seconds = 3;
+}
+
+// Heartbeat includes resource samples.
+message HeartbeatRequest {
+  string assigned_id = 1;
+  double cpu_percent = 2;              // between 0 and 100
+  uint64 memory_used_bytes = 3;        // resident
+  uint64 network_rx_bytes = 4;         // cumulative
+  uint64 network_tx_bytes = 5;         // cumulative
+  uint64 timestamp_unix_ms = 6;        // client capture time
+}
+
+message HeartbeatResponse {
+  bool ok = 1;             // server accepted
+  bool rotate_credentials = 2; // server requesting credential rotation
+}
+
+service AgentControl {
+  rpc RegisterAgent(RegisterAgentRequest) returns (RegisterAgentResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}

@@ -1,0 +1,12 @@
+[package]
+name = "cnlibfrontend"
+version = "0.1.0"
+edition = "2021"
+authors = ["WD Studios L.L.C."]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/WatchDogStudios/CassandraNet"
+homepage = "https://wdstudios.tech"
+description = """
+A Rust powered server management platform for games. Used internally at WD Studios.
+"""

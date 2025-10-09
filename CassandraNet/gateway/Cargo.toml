@@ -1,0 +1,42 @@
+[package]
+name = "cngateway"
+version = "0.1.0"
+edition = "2021"
+authors = ["WD Studios L.L.C."]
+license = "MIT"
+
+[features]
+default = []
+db = ["cncore/db"]
+
+[dependencies]
+axum = { version = "0.7", features = ["macros","json","tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread","macros","signal"] }
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cncore = { path = "../core" }
+anyhow = "1"
+prometheus = "0.13"
+once_cell = "1"
+futures = "0.3"
+sysinfo = "0.30"
+utoipa = { version = "4" }
+utoipa-swagger-ui = { version = "6", features = ["axum"] }
+uuid = { version = "1", features = ["v4"] }
+clap = { version = "4", features = ["derive"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+subtle = "2"
+http = "0.2"
+tonic = { version = "0.12", features = ["transport"] }
+cnproto = { path = "../cnproto" }
+tower-http = { version = "0.5", features = ["cors"] }
+tower = { version = "0.4", features = ["util"] }
+
+[dev-dependencies]
+tokio-stream = { version = "0.1", features = ["net"] }
+
+[build-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock","std"] }

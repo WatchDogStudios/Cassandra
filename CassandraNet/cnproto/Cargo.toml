@@ -1,0 +1,22 @@
+[package]
+name = "cnproto"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["WD Studios L.L.C."]
+
+[features]
+default = ["build"]
+build = []
+
+[dependencies]
+prost = "0.13"
+prost-types = "0.13"
+tonic = { version = "0.12", features = ["transport"] }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+prost-build = "0.13"
+tonic-build = { version = "0.12" }
+protoc-bin-vendored = "3"
+
