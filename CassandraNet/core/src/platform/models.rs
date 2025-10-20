@@ -1,3 +1,4 @@
+use crate::platform::error::PlatformError;
 use chrono::{DateTime, Utc};
 use cncommon::auth::Scope;
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,8 @@ pub type AgentId = Uuid;
 pub type ApiKeyId = Uuid;
 pub type TaskId = Uuid;
 pub type WorkflowId = Uuid;
+pub type ContentId = Uuid;
+pub type UploadId = Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tenant {
@@ -25,6 +28,13 @@ pub struct Project {
     pub tenant_id: TenantId,
     pub name: String,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ProjectStorageSettings {
+    pub bucket: Option<String>,
+    pub prefix: Option<String>,
+    pub max_object_size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,6 +131,7 @@ pub struct TenantSettings {
     pub allowed_origins: Vec<String>,
     pub token_ttl_seconds: Option<i64>,
     pub refresh_token_ttl_seconds: Option<i64>,
+    pub default_storage: Option<ProjectStorageSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -221,4 +232,129 @@ pub struct TaskTimeouts {
     pub lease_seconds: Option<u64>,
     pub execution_seconds: Option<u64>,
     pub retry_backoff_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UploadStatus {
+    Pending,
+    Uploading,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl UploadStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            UploadStatus::Pending => "pending",
+            UploadStatus::Uploading => "uploading",
+            UploadStatus::Completed => "completed",
+            UploadStatus::Failed => "failed",
+            UploadStatus::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl std::str::FromStr for UploadStatus {
+    type Err = PlatformError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(UploadStatus::Pending),
+            "uploading" => Ok(UploadStatus::Uploading),
+            "completed" => Ok(UploadStatus::Completed),
+            "failed" => Ok(UploadStatus::Failed),
+            "cancelled" => Ok(UploadStatus::Cancelled),
+            _ => Err(PlatformError::InvalidInput("invalid upload status")),
+        }
+    }
+}
+
+impl From<UploadStatus> for &'static str {
+    fn from(value: UploadStatus) -> Self {
+        value.as_str()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UploadSession {
+    pub id: UploadId,
+    pub tenant_id: TenantId,
+    pub project_id: ProjectId,
+    pub content_id: ContentId,
+    pub status: UploadStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub upload_url: Option<String>,
+    pub headers: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContentMetadata {
+    pub id: ContentId,
+    pub tenant_id: TenantId,
+    pub project_id: ProjectId,
+    pub filename: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub checksum: Option<String>,
+    pub storage_path: Option<String>,
+    pub labels: Vec<String>,
+    pub attributes: HashMap<String, String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub uploaded_by: Option<Uuid>,
+    pub visibility: ContentVisibility,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ContentVisibility {
+    Private,
+    Project,
+    Tenant,
+    Public,
+}
+
+impl ContentVisibility {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ContentVisibility::Private => "private",
+            ContentVisibility::Project => "project",
+            ContentVisibility::Tenant => "tenant",
+            ContentVisibility::Public => "public",
+        }
+    }
+}
+
+impl std::str::FromStr for ContentVisibility {
+    type Err = PlatformError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "private" => Ok(ContentVisibility::Private),
+            "project" => Ok(ContentVisibility::Project),
+            "tenant" => Ok(ContentVisibility::Tenant),
+            "public" => Ok(ContentVisibility::Public),
+            _ => Err(PlatformError::InvalidInput("invalid content visibility")),
+        }
+    }
+}
+
+impl From<ContentVisibility> for &'static str {
+    fn from(value: ContentVisibility) -> Self {
+        value.as_str()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ContentQuery {
+    pub tenant_id: TenantId,
+    pub project_id: Option<ProjectId>,
+    pub search_term: Option<String>,
+    pub tags: Vec<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
 }

@@ -12,6 +12,7 @@ use crate::metrics::MetricsLayer;
 use crate::state::AppState;
 use clap::Parser;
 use cncore::{config, init_tracing, shutdown_signal};
+use std::sync::Arc;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
@@ -92,11 +93,31 @@ async fn main() -> anyhow::Result<()> {
     }
     let swagger = utoipa_swagger_ui::SwaggerUi::new("/docs").url("/api-docs/openapi.json", openapi);
 
-    let state = AppState::default();
+    let state = {
+        #[cfg(feature = "db")]
+        {
+            use cncore::platform::persistence::PostgresContentStore;
+            let pool = cncore::db().await?.clone();
+            let store: Arc<dyn cncore::platform::persistence::ContentStore> =
+                Arc::new(PostgresContentStore::new(pool));
+            AppState::with_content_store(store)
+        }
+        #[cfg(not(feature = "db"))]
+        {
+            use cncore::platform::persistence::InMemoryPersistence;
+            let store: Arc<dyn cncore::platform::persistence::ContentStore> =
+                Arc::new(InMemoryPersistence::new());
+            AppState::with_content_store(store)
+        }
+    };
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([axum::http::Method::GET])
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+        ])
         .allow_headers(Any);
 
     let app = http::router()

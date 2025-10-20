@@ -1,6 +1,7 @@
 /// Copyright (C) 2024-present WD Studios L.L.C. & CassandraNet Contributors.
 pub mod auth;
 pub mod profile;
+pub mod observability;
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

@@ -26,6 +26,7 @@ base64 = "0.22"
 parking_lot = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 cncommon = { path = "../cncommon" }
+async-trait = "0.1"
 
 [build-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock","std"] }

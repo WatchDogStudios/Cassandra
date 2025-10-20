@@ -1,9 +1,17 @@
 use crate::{
     auth::{hs256_generate, hs256_validate},
     grpc::InMemoryAgentControl,
-    http::{health, list_agents, metrics as metrics_route, version, ApiDoc},
+    http::{
+        health,
+        list_agents,
+        metrics as metrics_route,
+        version,
+        ApiDoc,
+        ContentMetadataResponse,
+        UploadSessionResponse,
+    },
     metrics::{self, MetricsLayer},
-    state::{AgentRegistry, AppState},
+    state::AppState,
 };
 use axum::{
     body::to_bytes,
@@ -13,7 +21,11 @@ use axum::{
 };
 use cnproto::{agent_control_client::AgentControlClient, HeartbeatRequest, RegisterAgentRequest};
 use once_cell::sync::Lazy;
-use std::sync::Mutex;
+use serde_json::json;
+use std::sync::{Arc, Mutex};
+use chrono::Utc;
+use cncore::platform::models::{Project, Tenant, TenantSettings};
+use cncore::platform::persistence::{ContentStore, InMemoryPersistence, ProjectStore, TenantStore};
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Channel, Server};
@@ -163,9 +175,8 @@ async fn openapi_has_security_schemes() {
 #[tokio::test]
 async fn agents_list_after_grpc_heartbeat() {
     cncore::init_tracing();
-    let state = AppState {
-        registry: AgentRegistry::default(),
-    };
+    let store: Arc<dyn ContentStore> = Arc::new(InMemoryPersistence::new());
+    let state = AppState::with_content_store(store);
     let agent_svc = InMemoryAgentControl::new(state.registry.clone()).into_server();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let grpc_addr = listener.local_addr().unwrap();
@@ -220,6 +231,133 @@ async fn agents_list_after_grpc_heartbeat() {
     let body = to_bytes(resp.into_body(), 16 * 1024).await.unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(v.as_array().unwrap().iter().any(|a| a["id"] == "node1"));
+}
+
+#[tokio::test]
+async fn ugc_upload_flow_round_trip() {
+    cncore::init_tracing();
+    let persistence = Arc::new(InMemoryPersistence::new());
+    let tenant_id = uuid::Uuid::new_v4();
+    let project_id = uuid::Uuid::new_v4();
+    persistence
+        .insert_tenant(Tenant {
+            id: tenant_id,
+            name: "tenant".into(),
+            created_at: Utc::now(),
+            settings: TenantSettings::default(),
+        })
+        .unwrap();
+    persistence
+        .insert_project(Project {
+            id: project_id,
+            tenant_id,
+            name: "project".into(),
+            created_at: Utc::now(),
+        })
+        .unwrap();
+
+    let store: Arc<dyn ContentStore> = persistence.clone();
+    let state = AppState::with_content_store(store);
+    let app = crate::http::router().with_state(state.clone());
+
+    let create_body = json!({
+        "filename": "avatar.png",
+        "mime_type": "image/png",
+        "size_bytes": 1024,
+        "labels": ["avatar", "profile"],
+        "attributes": {"resolution": "512x512"},
+        "visibility": "tenant"
+    });
+    let create_req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/tenants/{}/projects/{}/uploads",
+            tenant_id, project_id
+        ))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .body(axum::body::Body::from(create_body.to_string()))
+        .unwrap();
+    let create_res = app
+        .clone()
+        .oneshot(create_req)
+        .await
+        .expect("create upload response");
+    let create_status = create_res.status();
+    let create_bytes = axum::body::to_bytes(create_res.into_body(), 16 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(
+        create_status,
+        axum::http::StatusCode::CREATED,
+        "create failed: {}",
+        String::from_utf8_lossy(&create_bytes)
+    );
+    let session: UploadSessionResponse = serde_json::from_slice(&create_bytes).unwrap();
+
+    let complete_body = json!({
+        "filename": "avatar.png",
+        "mime_type": "image/png",
+        "size_bytes": 1024,
+        "checksum": "abc123",
+        "labels": ["avatar", "profile"],
+        "attributes": {"resolution": "512x512"},
+        "visibility": "tenant"
+    });
+    let complete_req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/tenants/{}/projects/{}/uploads/{}/complete",
+            tenant_id, project_id, session.upload_id
+        ))
+        .header("content-type", "application/json")
+        .header("x-api-key", "test-key")
+        .body(axum::body::Body::from(complete_body.to_string()))
+        .unwrap();
+    let complete_res = app
+        .clone()
+        .oneshot(complete_req)
+        .await
+        .expect("complete upload response");
+    let complete_status = complete_res.status();
+    let complete_bytes = axum::body::to_bytes(complete_res.into_body(), 16 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(
+        complete_status,
+        axum::http::StatusCode::OK,
+        "complete failed: {}",
+        String::from_utf8_lossy(&complete_bytes)
+    );
+    let metadata: ContentMetadataResponse = serde_json::from_slice(&complete_bytes).unwrap();
+    assert_eq!(metadata.filename, "avatar.png");
+    assert_eq!(metadata.size_bytes, Some(1024));
+
+    let list_req = axum::http::Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/tenants/{}/projects/{}/content",
+            tenant_id, project_id
+        ))
+        .header("x-api-key", "test-key")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let list_res = app
+        .oneshot(list_req)
+        .await
+        .expect("list content response");
+    let list_status = list_res.status();
+    let list_bytes = axum::body::to_bytes(list_res.into_body(), 16 * 1024)
+        .await
+        .unwrap();
+    assert_eq!(
+        list_status,
+        axum::http::StatusCode::OK,
+        "list failed: {}",
+        String::from_utf8_lossy(&list_bytes)
+    );
+    let entries: Vec<ContentMetadataResponse> = serde_json::from_slice(&list_bytes).unwrap();
+    assert!(entries.iter().any(|m| m.id == metadata.id));
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use axum::http::HeaderMap;
+use serde_json::Value;
 use subtle::ConstantTimeEq;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +29,28 @@ pub fn validate_jwt(headers: &HeaderMap) -> AuthStatus {
         }
     }
     AuthStatus::Deny
+}
+
+pub fn has_scope(headers: &HeaderMap, required_scope: &str) -> bool {
+    if matches!(validate_api_key(headers), AuthStatus::Allow) {
+        return true;
+    }
+    let Some(value) = headers.get("authorization") else {
+        return false;
+    };
+    let Ok(header) = value.to_str() else {
+        return false;
+    };
+    let Some(token) = header.strip_prefix("Bearer ") else {
+        return false;
+    };
+    if !hs256_validate(token).unwrap_or(false) {
+        return false;
+    }
+    match decode_payload(token) {
+        Ok(payload) => scopes_allow(&payload, required_scope),
+        Err(_) => false,
+    }
 }
 
 pub fn hs256_generate(sub: &str) -> Result<String> {
@@ -81,4 +104,29 @@ pub fn hs256_validate(token: &str) -> Result<bool> {
     let provided = URL_SAFE_NO_PAD.decode(sig_b64).unwrap_or_default();
     Ok(provided.len() == sig.len()
         && ConstantTimeEq::ct_eq(provided.as_slice(), sig.as_slice()).into())
+}
+
+fn decode_payload(token: &str) -> Result<Value> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let mut parts = token.split('.');
+    let (_, payload_b64) = match (parts.next(), parts.next()) {
+        (Some(_header), Some(payload)) => ((), payload),
+        _ => return Err(anyhow::anyhow!("invalid token")),
+    };
+    let bytes = URL_SAFE_NO_PAD.decode(payload_b64)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn scopes_allow(payload: &Value, required: &str) -> bool {
+    if let Some(scopes) = payload.get("scopes").and_then(|v| v.as_array()) {
+        if scopes.iter().flat_map(Value::as_str).any(|s| s == required) {
+            return true;
+        }
+    }
+    if let Some(scope_str) = payload.get("scope").and_then(Value::as_str) {
+        if scope_str.split_whitespace().any(|s| s == required) {
+            return true;
+        }
+    }
+    false
 }
