@@ -78,11 +78,7 @@ impl LogPipeline {
     }
 
     pub fn emit(&self, event: LogEvent) {
-        let sinks = self
-            .sinks
-            .read()
-            .expect("log sinks lock poisoned")
-            .clone();
+        let sinks = self.sinks.read().expect("log sinks lock poisoned").clone();
         for sink in sinks {
             sink.on_event(&event);
         }
@@ -102,10 +98,7 @@ impl InMemoryLogSink {
     }
 
     pub fn snapshot(&self) -> Vec<LogEvent> {
-        self.events
-            .read()
-            .expect("log sink lock poisoned")
-            .clone()
+        self.events.read().expect("log sink lock poisoned").clone()
     }
 }
 

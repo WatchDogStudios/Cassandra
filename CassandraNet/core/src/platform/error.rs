@@ -17,3 +17,20 @@ pub enum PlatformError {
 }
 
 pub type PlatformResult<T> = Result<T, PlatformError>;
+
+#[cfg(feature = "db")]
+impl From<sqlx::Error> for PlatformError {
+    fn from(err: sqlx::Error) -> Self {
+        match err {
+            sqlx::Error::RowNotFound => PlatformError::NotFound("record"),
+            sqlx::Error::Database(db_err) => {
+                if db_err.code().as_deref() == Some("23505") {
+                    PlatformError::Conflict("record")
+                } else {
+                    PlatformError::Internal("database error")
+                }
+            }
+            _ => PlatformError::Internal("database error"),
+        }
+    }
+}

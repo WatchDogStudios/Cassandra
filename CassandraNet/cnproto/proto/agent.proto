@@ -10,6 +10,8 @@ message RegisterAgentRequest {
   uint32 cpu_cores = 5;       // logical core count
   uint64 memory_bytes = 6;    // total memory
   string secret = 7;          // bootstrap secret/token
+  string tenant_id = 8;       // optional tenant association
+  string project_id = 9;      // optional project association
 }
 
 message RegisterAgentResponse {

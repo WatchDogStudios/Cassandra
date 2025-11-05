@@ -2,12 +2,7 @@ use crate::{
     auth::{hs256_generate, hs256_validate},
     grpc::InMemoryAgentControl,
     http::{
-        health,
-        list_agents,
-        metrics as metrics_route,
-        version,
-        ApiDoc,
-        ContentMetadataResponse,
+        health, list_agents, metrics as metrics_route, version, ApiDoc, ContentMetadataResponse,
         UploadSessionResponse,
     },
     metrics::{self, MetricsLayer},
@@ -19,13 +14,13 @@ use axum::{
     routing::get,
     Router,
 };
+use chrono::Utc;
+use cncore::platform::models::{Project, Tenant, TenantSettings};
+use cncore::platform::persistence::{ContentStore, InMemoryPersistence, ProjectStore, TenantStore};
 use cnproto::{agent_control_client::AgentControlClient, HeartbeatRequest, RegisterAgentRequest};
 use once_cell::sync::Lazy;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
-use chrono::Utc;
-use cncore::platform::models::{Project, Tenant, TenantSettings};
-use cncore::platform::persistence::{ContentStore, InMemoryPersistence, ProjectStore, TenantStore};
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Channel, Server};
@@ -202,6 +197,8 @@ async fn agents_list_after_grpc_heartbeat() {
         cpu_cores: 4,
         memory_bytes: 1024,
         secret: "s".into(),
+        tenant_id: String::new(),
+        project_id: String::new(),
     };
     let _ = client.register_agent(reg).await.unwrap();
     let hb = HeartbeatRequest {
@@ -231,6 +228,52 @@ async fn agents_list_after_grpc_heartbeat() {
     let body = to_bytes(resp.into_body(), 16 * 1024).await.unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(v.as_array().unwrap().iter().any(|a| a["id"] == "node1"));
+}
+
+#[tokio::test]
+async fn agents_filtering_by_hostname() {
+    cncore::init_tracing();
+    let state = AppState::default();
+    state.registry.upsert(
+        "alpha".into(),
+        "host-alpha".into(),
+        20.0,
+        512,
+        None,
+        None,
+        None,
+        None,
+    );
+    state.registry.upsert(
+        "beta".into(),
+        "host-beta".into(),
+        10.0,
+        256,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    let app = Router::new()
+        .route("/agents", get(list_agents))
+        .with_state(state.clone());
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/agents?hostname=alpha")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), 16 * 1024).await.unwrap();
+    let list: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let items = list.as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], "alpha");
 }
 
 #[tokio::test]
@@ -342,10 +385,7 @@ async fn ugc_upload_flow_round_trip() {
         .header("x-api-key", "test-key")
         .body(axum::body::Body::empty())
         .unwrap();
-    let list_res = app
-        .oneshot(list_req)
-        .await
-        .expect("list content response");
+    let list_res = app.oneshot(list_req).await.expect("list content response");
     let list_status = list_res.status();
     let list_bytes = axum::body::to_bytes(list_res.into_body(), 16 * 1024)
         .await

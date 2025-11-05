@@ -13,6 +13,8 @@ pub type TaskId = Uuid;
 pub type WorkflowId = Uuid;
 pub type ContentId = Uuid;
 pub type UploadId = Uuid;
+pub type AssignmentId = Uuid;
+pub type MessageId = Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tenant {
@@ -42,6 +44,16 @@ pub enum AgentStatus {
     Registered,
     Active,
     Suspended,
+}
+
+impl AgentStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentStatus::Registered => "registered",
+            AgentStatus::Active => "active",
+            AgentStatus::Suspended => "suspended",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,6 +150,84 @@ pub struct TenantSettings {
 pub struct AgentMetadata {
     pub capabilities: Vec<String>,
     pub tags: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkStatus {
+    Pending,
+    Assigned,
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl WorkStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WorkStatus::Pending => "pending",
+            WorkStatus::Assigned => "assigned",
+            WorkStatus::InProgress => "in_progress",
+            WorkStatus::Completed => "completed",
+            WorkStatus::Failed => "failed",
+            WorkStatus::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl std::str::FromStr for WorkStatus {
+    type Err = PlatformError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(WorkStatus::Pending),
+            "assigned" => Ok(WorkStatus::Assigned),
+            "in_progress" => Ok(WorkStatus::InProgress),
+            "completed" => Ok(WorkStatus::Completed),
+            "failed" => Ok(WorkStatus::Failed),
+            "cancelled" | "canceled" => Ok(WorkStatus::Cancelled),
+            _ => Err(PlatformError::InvalidInput("invalid work status")),
+        }
+    }
+}
+
+impl From<WorkStatus> for &'static str {
+    fn from(value: WorkStatus) -> Self {
+        value.as_str()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkAssignment {
+    pub id: AssignmentId,
+    pub agent_id: AgentId,
+    pub workload_id: String,
+    pub tenant_id: Option<TenantId>,
+    pub project_id: Option<ProjectId>,
+    pub status: WorkStatus,
+    pub status_message: Option<String>,
+    pub metadata: HashMap<String, String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct AssignmentQuery {
+    pub agent_id: Option<AgentId>,
+    pub tenant_id: Option<TenantId>,
+    pub project_id: Option<ProjectId>,
+    pub status: Option<WorkStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct NewAssignment {
+    pub id: AssignmentId,
+    pub agent_id: AgentId,
+    pub workload_id: String,
+    pub tenant_id: Option<TenantId>,
+    pub project_id: Option<ProjectId>,
+    pub metadata: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -307,6 +397,151 @@ pub struct ContentMetadata {
     pub updated_at: DateTime<Utc>,
     pub uploaded_by: Option<Uuid>,
     pub visibility: ContentVisibility,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModerationState {
+    Pending,
+    Approved,
+    Rejected,
+    Archived,
+}
+
+impl ModerationState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ModerationState::Pending => "pending",
+            ModerationState::Approved => "approved",
+            ModerationState::Rejected => "rejected",
+            ModerationState::Archived => "archived",
+        }
+    }
+}
+
+impl std::str::FromStr for ModerationState {
+    type Err = PlatformError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(ModerationState::Pending),
+            "approved" => Ok(ModerationState::Approved),
+            "rejected" => Ok(ModerationState::Rejected),
+            "archived" => Ok(ModerationState::Archived),
+            _ => Err(PlatformError::InvalidInput("invalid moderation state")),
+        }
+    }
+}
+
+impl From<ModerationState> for &'static str {
+    fn from(value: ModerationState) -> Self {
+        value.as_str()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModeratedContent {
+    pub id: ContentId,
+    pub tenant_id: TenantId,
+    pub project_id: ProjectId,
+    pub filename: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub state: ModerationState,
+    pub reason: Option<String>,
+    pub labels: HashMap<String, String>,
+    pub attributes: HashMap<String, String>,
+    pub submitted_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ModerationQuery {
+    pub tenant_id: Option<TenantId>,
+    pub project_id: Option<ProjectId>,
+    pub state: Option<ModerationState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewModeratedContent {
+    pub id: ContentId,
+    pub tenant_id: TenantId,
+    pub project_id: ProjectId,
+    pub filename: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub labels: HashMap<String, String>,
+    pub attributes: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessagePriority {
+    Low,
+    Normal,
+    High,
+}
+
+impl MessagePriority {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MessagePriority::Low => "low",
+            MessagePriority::Normal => "normal",
+            MessagePriority::High => "high",
+        }
+    }
+}
+
+impl std::str::FromStr for MessagePriority {
+    type Err = PlatformError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "low" => Ok(MessagePriority::Low),
+            "normal" => Ok(MessagePriority::Normal),
+            "high" => Ok(MessagePriority::High),
+            _ => Err(PlatformError::InvalidInput("invalid message priority")),
+        }
+    }
+}
+
+impl From<MessagePriority> for &'static str {
+    fn from(value: MessagePriority) -> Self {
+        value.as_str()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageRecord {
+    pub id: MessageId,
+    pub tenant_id: TenantId,
+    pub project_id: ProjectId,
+    pub topic: String,
+    pub key: Option<String>,
+    pub payload: Vec<u8>,
+    pub priority: MessagePriority,
+    pub attributes: HashMap<String, String>,
+    pub published_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MessageQuery {
+    pub tenant_id: Option<TenantId>,
+    pub project_id: Option<ProjectId>,
+    pub topic: String,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewMessageRecord {
+    pub id: MessageId,
+    pub tenant_id: TenantId,
+    pub project_id: ProjectId,
+    pub topic: String,
+    pub key: Option<String>,
+    pub payload: Vec<u8>,
+    pub priority: MessagePriority,
+    pub attributes: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

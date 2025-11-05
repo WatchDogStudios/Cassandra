@@ -1,0 +1,68 @@
+syntax = "proto3";
+package cassandra.orchestration.v1;
+
+// WorkStatus reflects the orchestration lifecycle for agent assignments.
+enum WorkStatus {
+  WORK_STATUS_UNSPECIFIED = 0;
+  WORK_STATUS_PENDING = 1;
+  WORK_STATUS_ASSIGNED = 2;
+  WORK_STATUS_IN_PROGRESS = 3;
+  WORK_STATUS_COMPLETED = 4;
+  WORK_STATUS_FAILED = 5;
+  WORK_STATUS_CANCELLED = 6;
+}
+
+// WorkAssignment represents a single orchestration unit associated to an agent.
+message WorkAssignment {
+  string assignment_id = 1;
+  string agent_id = 2;
+  string workload_id = 3;
+  string tenant_id = 4;
+  string project_id = 5;
+  WorkStatus status = 6;
+  string status_message = 7;
+  int64 created_at_unix_ms = 8;
+  int64 updated_at_unix_ms = 9;
+  map<string, string> metadata = 10;
+}
+
+// AssignWorkRequest allows scheduling work to a specific agent.
+message AssignWorkRequest {
+  string agent_id = 1;
+  string workload_id = 2;
+  string tenant_id = 3;
+  string project_id = 4;
+  map<string, string> metadata = 5;
+}
+
+message AssignWorkResponse {
+  WorkAssignment assignment = 1;
+}
+
+// UpdateWorkStatusRequest tracks state transitions for an assignment.
+message UpdateWorkStatusRequest {
+  string assignment_id = 1;
+  WorkStatus status = 2;
+  string status_message = 3;
+}
+
+message UpdateWorkStatusResponse {
+  WorkAssignment assignment = 1;
+}
+
+message ListAssignmentsRequest {
+  string agent_id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  WorkStatus status_filter = 4;
+}
+
+message ListAssignmentsResponse {
+  repeated WorkAssignment assignments = 1;
+}
+
+service OrchestrationService {
+  rpc AssignWork(AssignWorkRequest) returns (AssignWorkResponse);
+  rpc UpdateWorkStatus(UpdateWorkStatusRequest) returns (UpdateWorkStatusResponse);
+  rpc ListAssignments(ListAssignmentsRequest) returns (ListAssignmentsResponse);
+}

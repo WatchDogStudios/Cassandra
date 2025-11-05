@@ -1,0 +1,11 @@
+.git
+.target
+**/target/
+**/node_modules/
+frontend/console/node_modules/
+dist/
+Dockerfile*
+docker-compose.override.yml
+.env
+.tmp
+*.log

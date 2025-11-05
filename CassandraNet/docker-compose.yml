@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-cassandra}"
+      POSTGRES_USER: "${POSTGRES_USER:-cassandra}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cassandra}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gateway
+    environment:
+      CASS__HTTP__BIND_ADDR: "0.0.0.0:8080"
+      CASS__DATABASE__URL: "${CASS__DATABASE__URL}"
+      CASS_JWT_SECRET: "${CASS_JWT_SECRET}"
+      RUST_LOG: "${RUST_LOG:-info}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+
+  agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agent
+    environment:
+      CASS__HTTP__BIND_ADDR: "gateway:8080"
+      CASS_AGENT_TENANT_ID: "demo-tenant"
+      CASS_AGENT_PROJECT_ID: "demo-project"
+      RUST_LOG: "info"
+    depends_on:
+      - gateway
+
+  console:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    depends_on:
+      - gateway
+    ports:
+      - "5173:80"
+
+volumes:
+  postgres-data:

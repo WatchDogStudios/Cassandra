@@ -2,7 +2,7 @@
 
 ![Cassandra Logo](data/images/branding/CASS_LOGO_CORE_.svg)
 
-A Rust powered server management platform for games. Used internally at WD Studios & is now being open-sourced, and ported over to rust.
+A Rust & Go powered server management platform for games. Used internally at WD Studios & is now being open-sourced, and ported over to rust.
 
 ## What is this really?
 
@@ -48,7 +48,8 @@ This section documents how to run what already exists in the repo today. Compone
 * `cnproto`: gRPC/protobuf definitions (AgentControl)
 * `cnagent`: Simple agent that registers & sends heartbeats over gRPC
 * `cnsdk_c`: C ABI stub (builds staticlib/cdylib)
-* `frontend/console`: React + Vite console (lists agents, shows health state)
+* `frontend/marketing`: Next.js marketing site (landing page, product overview)
+* `frontend/console`: React + Vite console (operator dashboard)
 
 ### Build Everything
 ```
@@ -94,17 +95,29 @@ Migrations run automatically on gateway startup (tables: users, orgs, membership
 ### Run the Agent (gRPC)
 Gateway gRPC listens on HTTP port + 1 (e.g. if HTTP is 8080, gRPC is 8081). Launch agent after gateway:
 ```
+set CASS_AGENT_TENANT_ID=<tenant uuid>
+set CASS_AGENT_PROJECT_ID=<project uuid>
 cargo run -p cnagent -- --gateway http://127.0.0.1:8081
 ```
 It will RegisterAgent then send periodic Heartbeat messages; the gateway exposes results at `GET /agents` and (if DB enabled) persists metadata.
 
-### React Console (Frontend)
+### Frontend (Marketing & Console)
+
+**Marketing site (Next.js)**
 ```
-cd frontend/console
-npm install   (first time)
+cd frontend/marketing
+npm install   # first time
 npm run dev
 ```
-Vite dev server (default 5173) proxies `/api/*` to the gateway (`http://127.0.0.1:8080`). Open http://localhost:5173/ to view agents table and health indicator.
+Runs the landing experience at <http://localhost:3000>. Tailwind powers the styling, and metadata is configured in `src/app/layout.tsx`.
+
+**Operator console (Vite)**
+```
+cd frontend/console
+npm install   # first time
+npm run dev
+```
+Vite (default <http://localhost:5173>) proxies `/api/*` to the gateway (`http://127.0.0.1:8080`). The refreshed UI shows backend health, key agent telemetry, and quick actions.
 
 ### Integration Tests
 Run all workspace tests:
@@ -143,6 +156,44 @@ Example metric names (see `/metrics`):
 * Additional services (orchestration, UGC, messaging) & Go microservices layer
 * Expanded frontend (agent detail, metrics charts)
 * Docker / Compose & CI pipelines
+
+## UGC Upload & Metadata (prototype)
+
+The current codebase now includes the first slice of a UGC pipeline:
+
+* **Domain models** – `core::platform::models` defines `ContentMetadata`, `UploadSession`, and related enums for tracking uploads, access visibility, and project-scoped storage preferences.
+* **Persistence contract** – `core::platform::persistence::ContentStore` abstracts storage providers. The in-memory implementation is wired into `InMemoryPersistence` so tests and early flows can exercise listing and querying metadata without an external database.
+* **Listing support** – a `ContentQuery` struct drives filtered listings by tenant, project, tags, and free-text matching across filenames and metadata attributes.
+* **Pluggable storage settings** – `ProjectStorageSettings` and additions to `TenantSettings` capture the target bucket/prefix configuration that real backends can interpret when wiring S3, Azure Blob, etc.
+
+### Upload session flow (planned wiring)
+1. Client requests an upload; the platform creates an `UploadSession` (status `Pending`) with a signed URL/header set for direct-to-storage uploads.
+2. Client transfers the blob to storage.
+3. Client (or storage webhook) finalises the session via `ContentStore::record_content_metadata`, transitioning the session to `Completed` and recording the blob metadata.
+4. Downstream services can list or fetch UGC using the metadata catalogue while respecting tenant and project boundaries.
+
+Middleware for rate limiting and validation is slated to sit in front of the session creation endpoint; see the "Security hardening" notes for the current plan.
+
+## Observability & Logging Scaffolding
+
+Shared utilities under `cncommon::observability` lay the groundwork for unified telemetry across services:
+
+* `InMemoryMetricsRegistry` – captures counters, gauges, and histograms with label support. Ideal for unit tests or early prototypes before wiring to Prometheus / OpenTelemetry exporters.
+* `LogPipeline` + `LogSink` – fan-out hub for structured log forwarding. An `InMemoryLogSink` is provided for tests; production sinks can forward to OTLP, Loki, or vendor APIs.
+* `LogEvent` carries component identifiers, tenant/project context, and arbitrary JSON metadata so audit trails remain multi-tenant aware.
+
+These utilities are lightweight, but already power unit tests to guarantee metrics and logs are emitted and captured. Future work will expose builders to plug them into the eventual HTTP gateway and background workers.
+
+## Security Hardening Checklist (in progress)
+
+To protect UGC uploads and multi-tenant workloads, the following items are being actively designed:
+
+* **Rate limiting** – per-tenant counters built on the metrics registry will feed sliding-window throttles for upload/session creation APIs.
+* **Tenant isolation** – storage metadata always records both tenant and project IDs; any persistence implementation must enforce these in query filters.
+* **Audit & observability** – every upload and metadata mutation will emit structured `LogEvent`s so downstream SIEM tooling can detect anomalies.
+* **End-to-end tests** – forthcoming integration specs will exercise the happy path (upload + metadata listing) alongside boundary cases (cross-tenant access, oversized objects, expired sessions).
+
+Contributors interested in these areas can start by reading the `ContentStore` trait and the observability helpers before proposing concrete integrations.
 
 ---
 This doc reflects the in-flight prototype state; expect breaking changes until a tagged pre-release.

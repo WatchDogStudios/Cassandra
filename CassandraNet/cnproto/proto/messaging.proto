@@ -1,0 +1,63 @@
+syntax = "proto3";
+package cassandra.messaging.v1;
+
+// MessagePriority communicates delivery urgency for messages.
+enum MessagePriority {
+  MESSAGE_PRIORITY_UNSPECIFIED = 0;
+  MESSAGE_PRIORITY_LOW = 1;
+  MESSAGE_PRIORITY_NORMAL = 2;
+  MESSAGE_PRIORITY_HIGH = 3;
+}
+
+// MessageEnvelope represents an outbound or inbound event.
+message MessageEnvelope {
+  string message_id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  string topic = 4;
+  string key = 5;
+  bytes payload = 6;
+  MessagePriority priority = 7;
+  int64 published_at_unix_ms = 8;
+  map<string, string> attributes = 9;
+}
+
+message PublishEventRequest {
+  string tenant_id = 1;
+  string project_id = 2;
+  string topic = 3;
+  string key = 4;
+  bytes payload = 5;
+  MessagePriority priority = 6;
+  map<string, string> attributes = 7;
+}
+
+message PublishEventResponse {
+  MessageEnvelope message = 1;
+}
+
+message PullMessagesRequest {
+  string tenant_id = 1;
+  string project_id = 2;
+  string topic = 3;
+  uint32 limit = 4;
+}
+
+message PullMessagesResponse {
+  repeated MessageEnvelope messages = 1;
+}
+
+message AckMessageRequest {
+  string message_id = 1;
+  string topic = 2;
+}
+
+message AckMessageResponse {
+  bool success = 1;
+}
+
+service MessagingService {
+  rpc PublishEvent(PublishEventRequest) returns (PublishEventResponse);
+  rpc PullMessages(PullMessagesRequest) returns (PullMessagesResponse);
+  rpc AckMessage(AckMessageRequest) returns (AckMessageResponse);
+}

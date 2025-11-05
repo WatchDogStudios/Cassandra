@@ -10,6 +10,8 @@ use axum::{
 };
 use chrono::{DateTime, Duration, Utc};
 use cncommon::observability::{LogEvent, LogLevel};
+#[cfg(feature = "db")]
+use cncore::platform::persistence::{AgentQuery, AgentSummaryRecord};
 use cncore::platform::{
     ContentId, ContentMetadata, ContentQuery, ContentVisibility, PlatformError, UploadId,
     UploadSession, UploadStatus,
@@ -57,20 +59,27 @@ impl From<PlatformError> for HttpError {
         match value {
             PlatformError::NotFound(_) => HttpError::new(StatusCode::NOT_FOUND, "not found"),
             PlatformError::Conflict(_) => HttpError::new(StatusCode::CONFLICT, "conflict"),
-            PlatformError::Unauthorized =>
-                HttpError::new(StatusCode::UNAUTHORIZED, "unauthorized"),
+            PlatformError::Unauthorized => HttpError::new(StatusCode::UNAUTHORIZED, "unauthorized"),
             PlatformError::Forbidden => HttpError::new(StatusCode::FORBIDDEN, "forbidden"),
-            PlatformError::InvalidInput(_) =>
-                HttpError::new(StatusCode::BAD_REQUEST, "invalid input"),
-            PlatformError::Internal(_) =>
-                HttpError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+            PlatformError::InvalidInput(_) => {
+                HttpError::new(StatusCode::BAD_REQUEST, "invalid input")
+            }
+            PlatformError::Internal(_) => {
+                HttpError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            }
         }
     }
 }
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
-        (self.status, Json(ErrorResponse { error: self.message })).into_response()
+        (
+            self.status,
+            Json(ErrorResponse {
+                error: self.message,
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -251,9 +260,59 @@ pub async fn metrics() -> (axum::http::StatusCode, String) {
     gather_metrics()
 }
 
-#[utoipa::path(get, path = "/agents", tag = "system", responses( (status = 200, body = [AgentSummary]) ))]
-pub async fn list_agents(State(state): State<AppState>) -> Json<Vec<AgentSummary>> {
-    Json(state.registry.list())
+#[derive(Debug, Deserialize, ToSchema, Default, IntoParams)]
+pub struct ListAgentsParams {
+    #[serde(default)]
+    pub hostname: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub lifecycle_status: Option<String>,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub last_seen_after: Option<i64>,
+    #[serde(default)]
+    pub last_seen_before: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/agents",
+    tag = "system",
+    params(ListAgentsParams),
+    responses( (status = 200, body = [AgentSummary]) )
+)]
+pub async fn list_agents(
+    State(state): State<AppState>,
+    Query(params): Query<ListAgentsParams>,
+) -> Result<Json<Vec<AgentSummary>>, HttpError> {
+    #[cfg(feature = "db")]
+    {
+        if let Some(store) = state.agent_store.as_ref() {
+            match build_agent_query(&params) {
+                Ok(query) => match store.query_agents(&query).await {
+                    Ok(records) => {
+                        let mapped: Vec<AgentSummary> =
+                            records.into_iter().map(map_agent_record).collect();
+                        return Ok(Json(filter_agent_summaries(mapped, &params)));
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "agents.query_failed_fallback");
+                    }
+                },
+                Err(err) => return Err(err),
+            }
+        }
+    }
+    let agents = state.registry.list();
+    Ok(Json(filter_agent_summaries(agents, &params)))
 }
 
 #[utoipa::path(
@@ -279,15 +338,12 @@ pub async fn create_upload_session(
         return Err(HttpError::new(StatusCode::BAD_REQUEST, "filename required"));
     }
     ensure_scope(&headers, "ugc:write")?;
-    if !state
-        .rate_limiter
-        .check_and_increment(
-            tenant_id,
-            "ugc:create_upload",
-            60,
-            StdDuration::from_secs(60),
-        )
-    {
+    if !state.rate_limiter.check_and_increment(
+        tenant_id,
+        "ugc:create_upload",
+        60,
+        StdDuration::from_secs(60),
+    ) {
         return Err(HttpError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate limit exceeded",
@@ -331,15 +387,17 @@ pub async fn create_upload_session(
     let mut metric_labels = HashMap::new();
     metric_labels.insert("tenant_id".to_string(), tenant_id.to_string());
     metric_labels.insert("project_id".to_string(), project_id.to_string());
-    state
-        .telemetry
-        .metrics
-        .increment_counter("ugc_upload_sessions_created", 1.0, Some(metric_labels.clone()));
+    state.telemetry.metrics.increment_counter(
+        "ugc_upload_sessions_created",
+        1.0,
+        Some(metric_labels.clone()),
+    );
     if let Some(size) = payload.size_bytes {
-        state
-            .telemetry
-            .metrics
-            .observe_histogram("ugc_upload_size_bytes", size as f64, Some(metric_labels.clone()));
+        state.telemetry.metrics.observe_histogram(
+            "ugc_upload_size_bytes",
+            size as f64,
+            Some(metric_labels.clone()),
+        );
     }
     state.telemetry.logs.emit(
         LogEvent::new(LogLevel::Info, "ugc.upload_session.created")
@@ -379,15 +437,12 @@ pub async fn complete_upload_session(
     Json(payload): Json<CompleteUploadRequest>,
 ) -> Result<Json<ContentMetadataResponse>, HttpError> {
     ensure_scope(&headers, "ugc:write")?;
-    if !state
-        .rate_limiter
-        .check_and_increment(
-            tenant_id,
-            "ugc:complete_upload",
-            120,
-            StdDuration::from_secs(60),
-        )
-    {
+    if !state.rate_limiter.check_and_increment(
+        tenant_id,
+        "ugc:complete_upload",
+        120,
+        StdDuration::from_secs(60),
+    ) {
         return Err(HttpError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate limit exceeded",
@@ -400,7 +455,10 @@ pub async fn complete_upload_session(
         .map_err(HttpError::from)?
         .ok_or_else(|| HttpError::new(StatusCode::NOT_FOUND, "upload session not found"))?;
     if session.tenant_id != tenant_id || session.project_id != project_id {
-        return Err(HttpError::new(StatusCode::FORBIDDEN, "upload session scope mismatch"));
+        return Err(HttpError::new(
+            StatusCode::FORBIDDEN,
+            "upload session scope mismatch",
+        ));
     }
     let now = Utc::now();
     if let Some(expires_at) = session.expires_at {
@@ -408,13 +466,23 @@ pub async fn complete_upload_session(
             return Err(HttpError::new(StatusCode::GONE, "upload session expired"));
         }
     }
-    if !matches!(session.status, UploadStatus::Pending | UploadStatus::Uploading) {
-        return Err(HttpError::new(StatusCode::BAD_REQUEST, "upload session closed"));
+    if !matches!(
+        session.status,
+        UploadStatus::Pending | UploadStatus::Uploading
+    ) {
+        return Err(HttpError::new(
+            StatusCode::BAD_REQUEST,
+            "upload session closed",
+        ));
     }
-    let storage_path = payload
-        .storage_path
-        .clone()
-        .unwrap_or_else(|| build_storage_path(&tenant_id, &project_id, &session.content_id, &payload.filename));
+    let storage_path = payload.storage_path.clone().unwrap_or_else(|| {
+        build_storage_path(
+            &tenant_id,
+            &project_id,
+            &session.content_id,
+            &payload.filename,
+        )
+    });
     session.status = UploadStatus::Completed;
     session.updated_at = now;
     session.upload_url = storage_base_url()
@@ -450,14 +518,16 @@ pub async fn complete_upload_session(
     let mut metric_labels = HashMap::new();
     metric_labels.insert("tenant_id".to_string(), tenant_id.to_string());
     metric_labels.insert("project_id".to_string(), project_id.to_string());
-    state
-        .telemetry
-        .metrics
-        .increment_counter("ugc_uploads_completed", 1.0, Some(metric_labels.clone()));
-    state
-        .telemetry
-        .metrics
-        .set_gauge("ugc_last_upload_size_bytes", payload.size_bytes as f64, Some(metric_labels.clone()));
+    state.telemetry.metrics.increment_counter(
+        "ugc_uploads_completed",
+        1.0,
+        Some(metric_labels.clone()),
+    );
+    state.telemetry.metrics.set_gauge(
+        "ugc_last_upload_size_bytes",
+        payload.size_bytes as f64,
+        Some(metric_labels.clone()),
+    );
     let metadata_response = ContentMetadataResponse::from(metadata.clone());
     state.telemetry.logs.emit(
         LogEvent::new(LogLevel::Info, "ugc.upload_session.completed")
@@ -495,15 +565,12 @@ pub async fn list_content_metadata(
     Query(params): Query<ListContentParams>,
 ) -> Result<Json<Vec<ContentMetadataResponse>>, HttpError> {
     ensure_scope(&headers, "ugc:read")?;
-    if !state
-        .rate_limiter
-        .check_and_increment(
-            tenant_id,
-            "ugc:list_content",
-            120,
-            StdDuration::from_secs(60),
-        )
-    {
+    if !state.rate_limiter.check_and_increment(
+        tenant_id,
+        "ugc:list_content",
+        120,
+        StdDuration::from_secs(60),
+    ) {
         return Err(HttpError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate limit exceeded",
@@ -525,14 +592,11 @@ pub async fn list_content_metadata(
     let mut metric_labels = HashMap::new();
     metric_labels.insert("tenant_id".to_string(), tenant_id.to_string());
     metric_labels.insert("project_id".to_string(), project_id.to_string());
-    state
-        .telemetry
-        .metrics
-        .set_gauge(
-            "ugc_content_listing_size",
-            items.len() as f64,
-            Some(metric_labels.clone()),
-        );
+    state.telemetry.metrics.set_gauge(
+        "ugc_content_listing_size",
+        items.len() as f64,
+        Some(metric_labels.clone()),
+    );
     state.telemetry.logs.emit(
         LogEvent::new(LogLevel::Debug, "ugc.content.listed")
             .with_component("gateway")
@@ -569,15 +633,12 @@ pub async fn list_recent_logs(
     Query(params): Query<ListLogsParams>,
 ) -> Result<Json<Vec<TelemetryLogResponse>>, HttpError> {
     ensure_scope(&headers, "observability:read")?;
-    if !state
-        .rate_limiter
-        .check_and_increment(
-            Uuid::nil(),
-            "observability:list_logs",
-            30,
-            StdDuration::from_secs(60),
-        )
-    {
+    if !state.rate_limiter.check_and_increment(
+        Uuid::nil(),
+        "observability:list_logs",
+        30,
+        StdDuration::from_secs(60),
+    ) {
         return Err(HttpError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate limit exceeded",
@@ -592,11 +653,196 @@ pub async fn list_recent_logs(
         .metrics
         .set_gauge("gateway_log_buffer_size", slice.len() as f64, None);
     Ok(Json(
-        slice
-            .into_iter()
-            .map(TelemetryLogResponse::from)
-            .collect(),
+        slice.into_iter().map(TelemetryLogResponse::from).collect(),
     ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentPresenceFilter {
+    Active,
+    Stale,
+    Offline,
+}
+
+impl AgentPresenceFilter {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "active" => Some(Self::Active),
+            "stale" => Some(Self::Stale),
+            "offline" => Some(Self::Offline),
+            _ => None,
+        }
+    }
+
+    fn matches(&self, last_seen: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+        const ACTIVE_SECS: i64 = 30;
+        const STALE_SECS: i64 = 300;
+        match (self, last_seen) {
+            (_, None) => matches!(self, Self::Offline),
+            (Self::Active, Some(ts)) => (now - ts) <= Duration::seconds(ACTIVE_SECS),
+            (Self::Stale, Some(ts)) => {
+                let age = now - ts;
+                age > Duration::seconds(ACTIVE_SECS) && age <= Duration::seconds(STALE_SECS)
+            }
+            (Self::Offline, Some(ts)) => (now - ts) > Duration::seconds(STALE_SECS),
+        }
+    }
+}
+
+fn filter_agent_summaries(
+    mut agents: Vec<AgentSummary>,
+    params: &ListAgentsParams,
+) -> Vec<AgentSummary> {
+    let hostname_filter = params.hostname.as_ref().map(|s| s.to_ascii_lowercase());
+    let status_filter = params
+        .status
+        .as_deref()
+        .and_then(AgentPresenceFilter::parse);
+    let lifecycle_filter = params
+        .lifecycle_status
+        .as_ref()
+        .map(|s| s.to_ascii_lowercase())
+        .or_else(|| {
+            if status_filter.is_none() {
+                params.status.as_ref().map(|s| s.to_ascii_lowercase())
+            } else {
+                None
+            }
+        });
+    let tenant_filter = params.tenant_id.as_ref().map(|s| s.to_ascii_lowercase());
+    let project_filter = params.project_id.as_ref().map(|s| s.to_ascii_lowercase());
+    let last_seen_after = params.last_seen_after;
+    let last_seen_before = params.last_seen_before;
+    let now = Utc::now();
+
+    agents.retain(|agent| {
+        if let Some(hostname) = &hostname_filter {
+            if !agent.hostname.to_ascii_lowercase().contains(hostname) {
+                return false;
+            }
+        }
+        if let Some(tenant) = &tenant_filter {
+            match &agent.tenant_id {
+                Some(value) if value.to_ascii_lowercase() == *tenant => {}
+                _ => return false,
+            }
+        }
+        if let Some(project) = &project_filter {
+            match &agent.project_id {
+                Some(value) if value.to_ascii_lowercase() == *project => {}
+                _ => return false,
+            }
+        }
+        if let Some(lifecycle) = &lifecycle_filter {
+            match &agent.lifecycle_status {
+                Some(current) if current.to_ascii_lowercase() == *lifecycle => {}
+                _ => return false,
+            }
+        }
+        if let Some(after) = last_seen_after {
+            let after = after.max(0) as u64;
+            if agent.last_seen_unix_ms < after {
+                return false;
+            }
+        }
+        if let Some(before) = last_seen_before {
+            let before = before.max(0) as u64;
+            if agent.last_seen_unix_ms > before {
+                return false;
+            }
+        }
+        if let Some(filter) = status_filter {
+            let last_seen_dt = agent_last_seen_datetime(agent);
+            if !filter.matches(last_seen_dt, now) {
+                return false;
+            }
+        }
+        true
+    });
+
+    agents.sort_by(|a, b| {
+        b.last_seen_unix_ms
+            .cmp(&a.last_seen_unix_ms)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    let offset = params.offset.unwrap_or(0) as usize;
+    let limit = params.limit.map(|v| v as usize).unwrap_or(usize::MAX);
+    agents.into_iter().skip(offset).take(limit).collect()
+}
+
+#[cfg(feature = "db")]
+fn build_agent_query(params: &ListAgentsParams) -> Result<AgentQuery, HttpError> {
+    use uuid::Uuid;
+
+    let tenant_id = params
+        .tenant_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|value| {
+            Uuid::parse_str(value)
+                .map_err(|_| HttpError::new(StatusCode::BAD_REQUEST, "invalid tenant_id"))
+        })
+        .transpose()?;
+    let project_id = params
+        .project_id
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|value| {
+            Uuid::parse_str(value)
+                .map_err(|_| HttpError::new(StatusCode::BAD_REQUEST, "invalid project_id"))
+        })
+        .transpose()?;
+    let last_seen_after = params.last_seen_after.and_then(datetime_from_millis);
+    let last_seen_before = params.last_seen_before.and_then(datetime_from_millis);
+    let hostname_fragment = params.hostname.clone();
+    let lifecycle_status = params
+        .lifecycle_status
+        .as_ref()
+        .map(|s| s.to_ascii_lowercase());
+
+    Ok(AgentQuery {
+        tenant_id,
+        project_id,
+        hostname_fragment,
+        lifecycle_status,
+        last_seen_after,
+        last_seen_before,
+        limit: params.limit.map(|v| v as i64),
+        offset: params.offset.map(|v| v as i64),
+    })
+}
+
+#[cfg(feature = "db")]
+fn map_agent_record(record: AgentSummaryRecord) -> AgentSummary {
+    AgentSummary {
+        id: record.id.to_string(),
+        hostname: record.hostname,
+        last_seen_unix_ms: record
+            .last_seen
+            .map(|dt| dt.timestamp_millis().max(0) as u64)
+            .unwrap_or(0),
+        cpu_percent: record.cpu_percent.unwrap_or(0.0),
+        memory_used_bytes: record
+            .memory_used_bytes
+            .map(|v| v.max(0) as u64)
+            .unwrap_or(0),
+        tenant_id: record.tenant_id.map(|id| id.to_string()),
+        project_id: record.project_id.map(|id| id.to_string()),
+        lifecycle_status: record.lifecycle_status,
+    }
+}
+
+fn agent_last_seen_datetime(agent: &AgentSummary) -> Option<DateTime<Utc>> {
+    if agent.last_seen_unix_ms == 0 {
+        return None;
+    }
+    let millis = i64::try_from(agent.last_seen_unix_ms).ok()?;
+    DateTime::<Utc>::from_timestamp_millis(millis)
+}
+
+fn datetime_from_millis(value: i64) -> Option<DateTime<Utc>> {
+    DateTime::<Utc>::from_timestamp_millis(value)
 }
 
 #[derive(OpenApi)]
@@ -616,6 +862,7 @@ pub async fn list_recent_logs(
             HealthResponse,
             VersionResponse,
             AgentSummary,
+            ListAgentsParams,
             ErrorResponse,
             CreateUploadRequest,
             CompleteUploadRequest,

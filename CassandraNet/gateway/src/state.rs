@@ -1,12 +1,18 @@
 use cncommon::observability::{InMemoryLogSink, InMemoryMetricsRegistry, LogPipeline};
-use cncore::platform::persistence::{ContentStore, InMemoryPersistence};
+#[cfg(feature = "db")]
+use cncore::platform::persistence::PostgresAgentStore;
+#[cfg(feature = "db")]
+use cncore::platform::persistence::PostgresContentStore;
+use cncore::platform::persistence::{
+    ContentStore, InMemoryPersistence, MessagingStore, ModerationStore, OrchestrationStore,
+};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration as StdDuration, Instant};
-use uuid::Uuid;
 use std::time::{SystemTime, UNIX_EPOCH};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 #[derive(Serialize, Clone, Debug, ToSchema)]
 pub struct AgentSummary {
@@ -15,31 +21,60 @@ pub struct AgentSummary {
     pub last_seen_unix_ms: u64,
     pub cpu_percent: f64,
     pub memory_used_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_status: Option<String>,
 }
 
 #[derive(Default, Clone)]
 pub struct AgentRegistry(pub(crate) Arc<RwLock<HashMap<String, AgentSummary>>>);
 
 impl AgentRegistry {
-    pub fn upsert(&self, id: String, hostname: String, cpu: f64, mem: u64) {
+    pub fn upsert(
+        &self,
+        id: String,
+        hostname: String,
+        cpu: f64,
+        mem: u64,
+        tenant_id: Option<String>,
+        project_id: Option<String>,
+        lifecycle_status: Option<String>,
+        last_seen_override: Option<u64>,
+    ) {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
+        let effective_last_seen = last_seen_override.filter(|ts| *ts > 0).unwrap_or(now_ms);
         let mut map = self.0.write().unwrap();
         map.entry(id.clone())
             .and_modify(|a| {
-                a.last_seen_unix_ms = now_ms;
+                a.last_seen_unix_ms = effective_last_seen;
                 a.cpu_percent = cpu;
                 a.memory_used_bytes = mem;
                 a.hostname = hostname.clone();
+                if tenant_id.is_some() {
+                    a.tenant_id = tenant_id.clone();
+                }
+                if project_id.is_some() {
+                    a.project_id = project_id.clone();
+                }
+                if lifecycle_status.is_some() {
+                    a.lifecycle_status = lifecycle_status.clone();
+                }
             })
             .or_insert(AgentSummary {
                 id,
                 hostname,
-                last_seen_unix_ms: now_ms,
+                last_seen_unix_ms: effective_last_seen,
                 cpu_percent: cpu,
                 memory_used_bytes: mem,
+                tenant_id,
+                project_id,
+                lifecycle_status,
             });
     }
 
@@ -55,16 +90,30 @@ impl AgentRegistry {
 pub struct AppState {
     pub registry: AgentRegistry,
     pub content_store: Arc<dyn ContentStore>,
+    pub orchestration_store: Arc<dyn OrchestrationStore>,
+    pub moderation_store: Arc<dyn ModerationStore>,
+    pub messaging_store: Arc<dyn MessagingStore>,
+    #[cfg(feature = "db")]
+    pub agent_store: Option<Arc<PostgresAgentStore>>,
     pub telemetry: TelemetryState,
     pub rate_limiter: RateLimiter,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        let persistence: Arc<dyn ContentStore> = Arc::new(InMemoryPersistence::new());
+        let persistence = Arc::new(InMemoryPersistence::new());
+        let content_store: Arc<dyn ContentStore> = persistence.clone();
+        let orchestration_store: Arc<dyn OrchestrationStore> = persistence.clone();
+        let moderation_store: Arc<dyn ModerationStore> = persistence.clone();
+        let messaging_store: Arc<dyn MessagingStore> = persistence.clone();
         Self {
             registry: AgentRegistry::default(),
-            content_store: persistence,
+            content_store,
+            orchestration_store,
+            moderation_store,
+            messaging_store,
+            #[cfg(feature = "db")]
+            agent_store: None,
             telemetry: TelemetryState::default(),
             rate_limiter: RateLimiter::new(),
         }
@@ -73,12 +122,9 @@ impl Default for AppState {
 
 impl AppState {
     pub fn with_content_store(content_store: Arc<dyn ContentStore>) -> Self {
-        Self {
-            registry: AgentRegistry::default(),
-            content_store,
-            telemetry: TelemetryState::default(),
-            rate_limiter: RateLimiter::new(),
-        }
+        let mut state = Self::default();
+        state.content_store = content_store;
+        state
     }
 
     pub fn with_dependencies(
@@ -86,12 +132,11 @@ impl AppState {
         telemetry: TelemetryState,
         rate_limiter: RateLimiter,
     ) -> Self {
-        Self {
-            registry: AgentRegistry::default(),
-            content_store,
-            telemetry,
-            rate_limiter,
-        }
+        let mut state = Self::default();
+        state.content_store = content_store;
+        state.telemetry = telemetry;
+        state.rate_limiter = rate_limiter;
+        state
     }
 }
 

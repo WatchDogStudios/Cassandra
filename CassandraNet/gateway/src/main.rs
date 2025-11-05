@@ -12,8 +12,8 @@ use crate::metrics::MetricsLayer;
 use crate::state::AppState;
 use clap::Parser;
 use cncore::{config, init_tracing, shutdown_signal};
-use std::sync::Arc;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
 use tower_http::cors::{Any, CorsLayer};
@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
         if let Err(e) = cncore::run_migrations().await {
             tracing::error!(error = %e, "migrations failed");
         } else {
-            tracing::info!("migrations.ok", "database migrations applied");
+            tracing::info!("database migrations applied");
         }
     }
 
@@ -96,11 +96,26 @@ async fn main() -> anyhow::Result<()> {
     let state = {
         #[cfg(feature = "db")]
         {
-            use cncore::platform::persistence::PostgresContentStore;
+            use cncore::platform::persistence::{
+                PostgresAgentStore, PostgresContentStore, PostgresMessagingStore,
+                PostgresModerationStore, PostgresOrchestrationStore,
+            };
             let pool = cncore::db().await?.clone();
-            let store: Arc<dyn cncore::platform::persistence::ContentStore> =
-                Arc::new(PostgresContentStore::new(pool));
-            AppState::with_content_store(store)
+            let content_store: Arc<dyn cncore::platform::persistence::ContentStore> =
+                Arc::new(PostgresContentStore::new(pool.clone()));
+            let orchestration_store: Arc<dyn cncore::platform::persistence::OrchestrationStore> =
+                Arc::new(PostgresOrchestrationStore::new(pool.clone()));
+            let moderation_store: Arc<dyn cncore::platform::persistence::ModerationStore> =
+                Arc::new(PostgresModerationStore::new(pool.clone()));
+            let messaging_store: Arc<dyn cncore::platform::persistence::MessagingStore> =
+                Arc::new(PostgresMessagingStore::new(pool.clone()));
+            let agent_store = Arc::new(PostgresAgentStore::new(pool));
+            let mut state = AppState::with_content_store(content_store);
+            state.orchestration_store = orchestration_store;
+            state.moderation_store = moderation_store;
+            state.messaging_store = messaging_store;
+            state.agent_store = Some(agent_store);
+            state
         }
         #[cfg(not(feature = "db"))]
         {
@@ -131,7 +146,20 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     tracing::info!(%addr, "gateway listening (http + grpc on same port via hyper)");
 
-    let grpc_service = grpc::InMemoryAgentControl::new(state.registry.clone()).into_server();
+    let grpc_service = {
+        #[cfg(feature = "db")]
+        {
+            grpc::InMemoryAgentControl::with_store(
+                state.registry.clone(),
+                state.agent_store.clone(),
+            )
+        }
+        #[cfg(not(feature = "db"))]
+        {
+            grpc::InMemoryAgentControl::new(state.registry.clone())
+        }
+    }
+    .into_server();
     let mut grpc_addr = addr;
     grpc_addr.set_port(grpc_addr.port() + 1);
     let grpc = Server::builder().add_service(grpc_service).serve(grpc_addr);

@@ -1,5 +1,5 @@
-pub mod metrics;
 pub mod logging;
+pub mod metrics;
 
-pub use metrics::{InMemoryMetricsRegistry, MetricKind, MetricPoint};
 pub use logging::{InMemoryLogSink, LogEvent, LogLevel, LogPipeline, LogSink};
+pub use metrics::{InMemoryMetricsRegistry, MetricKind, MetricPoint};

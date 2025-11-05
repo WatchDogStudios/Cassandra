@@ -31,6 +31,30 @@
 - **Egress**: Workers emit decisions to a result stream exposed via `GET /jobs/next` for manual review tooling.
 - **Core Package**: `internal/ugcworker` implements the queue, moderation policy engine, and result storage.
 
+### UGC Service (`cmd/ugc-service`)
+
+- **Purpose**: Persist metadata for submitted assets, surface moderation status, and drive the console experience.
+- **Ingress**: `POST /content` captures submissions with `{content_id, tenant_id, project_id, filename, mime_type, size_bytes, labels, attributes}`.
+- **Moderation**: Review decisions arrive via `POST /content/{id}/review` with `{state, reason}`. States align with proto enum `ContentState` (`pending`, `approved`, `rejected`, `archived`).
+- **Egress**: `GET /content` lists submissions filtered by tenant, project, or state; responses mirror the gRPC contract in `cnproto/proto/ugc.proto`.
+- **Core Package**: `internal/ugc` owns HTTP translation, domain validation, and delegates persistence to pluggable stores (in-memory today, Postgres planned).
+
+### Orchestration Service (`cmd/orchestrator`)
+
+- **Purpose**: Manage agent assignments and lifecycle transitions for workloads scheduled by the control plane.
+- **Ingress**: `POST /assignments` registers work for an agent with `{agent_id, workload_id, tenant_id, project_id, metadata}`.
+- **Lifecycle**: `PATCH /assignments/{id}` updates status (`pending`, `assigned`, `in_progress`, `completed`, `failed`, `cancelled`) and optional status messages.
+- **Egress**: `GET /assignments` lists assignments filtered by agent, tenant, project, or status aligning with `cassandra.orchestration.v1` proto messages.
+- **Core Package**: `internal/orchestration` provides validation plus swappable persistence with an in-memory store for local development.
+
+### Messaging Service (`cmd/messaging-service`)
+
+- **Purpose**: Provide publish/pull semantics for gameplay and platform events prior to integrating external brokers.
+- **Ingress**: `POST /topics/{topic}/messages` accepts `{tenant_id, project_id, key, payload_base64, priority, attributes}` and queues messages.
+- **Consumption**: `GET /topics/{topic}/messages` streams messages with optional tenant/project filters and configurable limits.
+- **Ack Flow**: `POST /topics/{topic}/messages/{id}/ack` removes messages after successful processing. Priorities map to `cassandra.messaging.v1` proto enums.
+- **Core Package**: `internal/messaging` encapsulates storage and HTTP presentation with a memory-backed store that will be replaced by Postgres (and optional Redis cache) later.
+
 ### Notification Service (`cmd/notification`)
 
 - **Purpose**: Deliver transactional email and in-app notifications triggered by domain events.
@@ -46,6 +70,6 @@
 
 ## Next Steps
 
-1. Scaffold the shared Go module (`go.mod`, `go.work` if needed) and internal utilities.
-2. Implement each service following the above contracts.
-3. Provide a top-level README with quickstart commands and troubleshooting tips.
+1. Extend the in-memory stores with Postgres-backed implementations and migrations.
+2. Wire the new services into gateway/gRPC handlers once proto integration lands.
+3. Provide a top-level README with quickstart commands, docker-compose definitions, and troubleshooting tips.

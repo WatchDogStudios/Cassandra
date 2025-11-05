@@ -69,11 +69,15 @@ impl WorkflowRunState {
                 self.step_lookup
                     .get(id)
                     .map(|step| {
-                        step.dependencies.iter().all(|dep| match dep.required_status {
-                            TaskStatus::Completed => self.completed_kinds.contains(&dep.task_kind),
-                            TaskStatus::Failed => self.failed_kinds.contains(&dep.task_kind),
-                            TaskStatus::Pending | TaskStatus::InProgress => true,
-                        })
+                        step.dependencies
+                            .iter()
+                            .all(|dep| match dep.required_status {
+                                TaskStatus::Completed => {
+                                    self.completed_kinds.contains(&dep.task_kind)
+                                }
+                                TaskStatus::Failed => self.failed_kinds.contains(&dep.task_kind),
+                                TaskStatus::Pending | TaskStatus::InProgress => true,
+                            })
                     })
                     .unwrap_or(false)
             })
@@ -157,9 +161,7 @@ impl OrchestrationEngine {
     }
 
     pub fn register_task_policy(&self, kind: impl Into<String>, policy: TaskPolicy) {
-        self.task_policies
-            .write()
-            .insert(kind.into(), policy);
+        self.task_policies.write().insert(kind.into(), policy);
     }
 
     pub fn register_workflow(
@@ -181,7 +183,7 @@ impl OrchestrationEngine {
         self.workflows.insert_workflow(workflow.clone())?;
         Ok(workflow)
     }
-    
+
     pub fn schedule_task(&self, request: TaskRequest) -> PlatformResult<Task> {
         let policy = self
             .task_policies
@@ -395,21 +397,12 @@ impl OrchestrationEngine {
                 .min_by(|a, b| a.scheduled_at.cmp(&b.scheduled_at)),
             SchedulerStrategy::Priority => {
                 let policies = self.task_policies.read();
-                pending
-                    .iter()
-                    .cloned()
-                    .min_by(|a, b| {
-                        let ap = policies
-                            .get(&a.kind)
-                            .map(|p| p.priority)
-                            .unwrap_or(100);
-                        let bp = policies
-                            .get(&b.kind)
-                            .map(|p| p.priority)
-                            .unwrap_or(100);
-                        ap.cmp(&bp)
-                            .then_with(|| a.scheduled_at.cmp(&b.scheduled_at))
-                    })
+                pending.iter().cloned().min_by(|a, b| {
+                    let ap = policies.get(&a.kind).map(|p| p.priority).unwrap_or(100);
+                    let bp = policies.get(&b.kind).map(|p| p.priority).unwrap_or(100);
+                    ap.cmp(&bp)
+                        .then_with(|| a.scheduled_at.cmp(&b.scheduled_at))
+                })
             }
             SchedulerStrategy::FairnessByKind => {
                 let last_kind = self.last_kind.read().clone();
@@ -436,12 +429,7 @@ impl OrchestrationEngine {
         candidate
     }
 
-    fn start_lease(
-        &self,
-        task: &Task,
-        worker_id: Uuid,
-        lease_ttl: Duration,
-    ) -> TaskLease {
+    fn start_lease(&self, task: &Task, worker_id: Uuid, lease_ttl: Duration) -> TaskLease {
         let lease_window = task
             .timeouts
             .as_ref()
@@ -473,10 +461,7 @@ impl OrchestrationEngine {
         }
     }
 
-    fn clear_lease(
-        &self,
-        task_id: TaskId,
-    ) {
+    fn clear_lease(&self, task_id: TaskId) {
         self.lease_states.write().remove(&task_id);
     }
 

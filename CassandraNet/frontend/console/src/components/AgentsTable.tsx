@@ -6,9 +6,17 @@ interface AgentsTableProps {
   agents: AgentSummary[];
   isLoading: boolean;
   error?: Error | null;
+  selectedAgentId?: string | null;
+  onSelect?: (agentId: string) => void;
 }
 
-export const AgentsTable: React.FC<AgentsTableProps> = ({ agents, isLoading, error }) => {
+export const AgentsTable: React.FC<AgentsTableProps> = ({
+  agents,
+  isLoading,
+  error,
+  selectedAgentId,
+  onSelect
+}) => {
   if (isLoading) {
     return (
       <div className="empty-state">
@@ -63,8 +71,23 @@ export const AgentsTable: React.FC<AgentsTableProps> = ({ agents, isLoading, err
               state = 'down';
             }
 
+            const isSelected = agent.id === selectedAgentId;
+
             return (
-              <tr key={agent.id}>
+              <tr
+                key={agent.id}
+                className={isSelected ? 'table-row table-row-selected' : 'table-row'}
+                onClick={() => onSelect?.(agent.id)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSelect?.(agent.id);
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+                aria-pressed={isSelected}
+              >
                 <td style={{ fontWeight: 600 }}>{agent.id}</td>
                 <td>{agent.hostname}</td>
                 <td>

@@ -1,9 +1,10 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AgentsTable } from './components/AgentsTable';
 import { StatCard } from './components/StatCard';
 import { StatusBadge } from './components/StatusBadge';
-import type { AgentSummary, HealthResponse } from './types';
+import { AgentDetailPanel } from './components/AgentDetailPanel';
+import type { AgentMetricHistory, AgentSummary, HealthResponse } from './types';
 
 const AGENT_POLL_INTERVAL = 5_000;
 const HEALTH_POLL_INTERVAL = 10_000;
@@ -34,6 +35,49 @@ export default function App() {
     refetchInterval: AGENT_POLL_INTERVAL
   });
 
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [history, setHistory] = useState<Map<string, AgentMetricHistory>>(new Map());
+
+  useEffect(() => {
+    setSelectedAgentId(prev => {
+      const list = agents.data ?? [];
+      if (!list.length) {
+        return null;
+      }
+      if (prev && list.some(agent => agent.id === prev)) {
+        return prev;
+      }
+      return list[0].id;
+    });
+  }, [agents.data]);
+
+  useEffect(() => {
+    if (!agents.data || !agents.data.length) {
+      return;
+    }
+    const now = Date.now();
+    const maxPoints = 24;
+    setHistory(prev => {
+      const next = new Map(prev);
+      const seen = new Set<string>();
+      agents.data?.forEach(agent => {
+        seen.add(agent.id);
+        const existing = next.get(agent.id) ?? { cpu: [], memory: [], timestamps: [] };
+        const cpu = [...existing.cpu, agent.cpu_percent].slice(-maxPoints);
+        const memoryMb = agent.memory_used_bytes / 1024 / 1024;
+        const memory = [...existing.memory, memoryMb].slice(-maxPoints);
+        const timestamps = [...existing.timestamps, now].slice(-maxPoints);
+        next.set(agent.id, { cpu, memory, timestamps });
+      });
+      for (const key of Array.from(next.keys())) {
+        if (!seen.has(key)) {
+          next.delete(key);
+        }
+      }
+      return next;
+    });
+  }, [agents.data]);
+
   const agentError = useMemo(() => {
     if (!agents.error) {
       return null;
@@ -47,7 +91,7 @@ export default function App() {
     const totalMemory = list.reduce((sum, agent) => sum + agent.memory_used_bytes, 0);
     const avgCpu = list.length ? (totalCpu / list.length).toFixed(1) : '0.0';
     const memoryGb = (totalMemory / list.length || 0) / 1024 / 1024 / 1024;
-    const avgMemory = list.length ? `${memoryGb.toFixed(2)} GB` : '0.00 GB';
+    const avgMemory = list.length ? `${(memoryGb / 1000).toFixed(2)} GB` : '0.00 GB';
     const healthyAgents = list.filter(agent => Date.now() - agent.last_seen_unix_ms < 30_000).length;
 
     return {
@@ -65,6 +109,15 @@ export default function App() {
     backendStatus = 'up';
   }
 
+  const selectedAgent = useMemo(() => {
+    if (!agents.data || !agents.data.length) {
+      return null;
+    }
+    return agents.data.find(agent => agent.id === selectedAgentId) ?? null;
+  }, [agents.data, selectedAgentId]);
+
+  const selectedMetrics = selectedAgent ? history.get(selectedAgent.id) : undefined;
+
   return (
     <main>
       <header>
@@ -78,7 +131,7 @@ export default function App() {
           <button className="button-secondary" type="button" onClick={() => window.open('https://cassantranet.dev', '_blank')}>
             Marketing site
           </button>
-          <button className="button-primary" type="button" onClick={() => window.open('mailto:support@watchdogstudios.io', '_blank')}>
+          <button className="button-primary" type="button" onClick={() => window.open('mailto:contact@wdstudios.tech', '_blank')}>
             Contact support
           </button>
         </nav>
@@ -119,15 +172,28 @@ export default function App() {
         )}
       </section>
 
-      <section className="table-wrapper">
-        <div className="table-header">
-          <div>
-            <h2>Connected agents</h2>
-            <span>Live telemetry snapshot</span>
+      <section className="detail-layout">
+        <div className="table-wrapper">
+          <div className="table-header">
+            <div>
+              <h2>Connected agents</h2>
+              <span>Live telemetry snapshot</span>
+            </div>
+            <span className="muted">Auto-refresh every {AGENT_POLL_INTERVAL / 1000}s</span>
           </div>
-          <span className="muted">Auto-refresh every {AGENT_POLL_INTERVAL / 1000}s</span>
+          <AgentsTable
+            agents={agents.data ?? []}
+            isLoading={agents.isLoading}
+            error={agentError}
+            selectedAgentId={selectedAgentId}
+            onSelect={setSelectedAgentId}
+          />
         </div>
-  <AgentsTable agents={agents.data ?? []} isLoading={agents.isLoading} error={agentError} />
+        <AgentDetailPanel
+          agent={selectedAgent}
+          metrics={selectedMetrics}
+          pollIntervalMs={AGENT_POLL_INTERVAL}
+        />
       </section>
 
       <p className="footer-note">

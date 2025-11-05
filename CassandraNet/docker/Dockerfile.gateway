@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1.6
+
+FROM rust:1.79-bullseye AS builder
+WORKDIR /workspace
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libssl-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CARGO_TERM_COLOR=always
+
+COPY Cargo.toml Cargo.lock ./
+COPY cnagent/Cargo.toml cnagent/Cargo.toml
+COPY cnbackend/Cargo.toml cnbackend/Cargo.toml
+COPY cnclient/Cargo.toml cnclient/Cargo.toml
+COPY cncommon/Cargo.toml cncommon/Cargo.toml
+COPY cnlibfrontend/Cargo.toml cnlibfrontend/Cargo.toml
+COPY cnproto/Cargo.toml cnproto/Cargo.toml
+COPY core/Cargo.toml core/Cargo.toml
+COPY gateway/Cargo.toml gateway/Cargo.toml
+COPY cnsdk_c/Cargo.toml cnsdk_c/Cargo.toml
+
+COPY . .
+
+RUN cargo build --release -p cngateway --features db
+
+FROM debian:bookworm-slim AS runtime
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /workspace/target/release/cngateway /usr/local/bin/cngateway
+
+ENV CASS__HTTP__BIND_ADDR=0.0.0.0:8080 \
+    RUST_LOG=info
+
+EXPOSE 8080 8081
+
+ENTRYPOINT ["cngateway"]

@@ -1,11 +1,12 @@
 use crate::platform::error::{PlatformError, PlatformResult};
 use crate::platform::models::*;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
 #[cfg(feature = "db")]
 use sqlx::{postgres::PgRow, Pool, Postgres, QueryBuilder, Row};
-use chrono::Utc;
-use parking_lot::RwLock;
 use std::collections::{HashMap, VecDeque};
+use std::str::FromStr;
 use std::sync::Arc;
 
 pub trait TenantStore: Send + Sync {
@@ -62,6 +63,38 @@ pub trait ContentStore: Send + Sync {
     ) -> PlatformResult<Vec<ContentMetadata>>;
 }
 
+#[async_trait]
+pub trait OrchestrationStore: Send + Sync {
+    async fn create_assignment(&self, input: NewAssignment) -> PlatformResult<WorkAssignment>;
+    async fn update_assignment_status(
+        &self,
+        id: AssignmentId,
+        status: WorkStatus,
+        status_message: Option<String>,
+    ) -> PlatformResult<WorkAssignment>;
+    async fn list_assignments(&self, query: AssignmentQuery)
+        -> PlatformResult<Vec<WorkAssignment>>;
+}
+
+#[async_trait]
+pub trait ModerationStore: Send + Sync {
+    async fn create_content(&self, input: NewModeratedContent) -> PlatformResult<ModeratedContent>;
+    async fn update_content_state(
+        &self,
+        id: ContentId,
+        state: ModerationState,
+        reason: Option<String>,
+    ) -> PlatformResult<ModeratedContent>;
+    async fn list_content(&self, query: ModerationQuery) -> PlatformResult<Vec<ModeratedContent>>;
+}
+
+#[async_trait]
+pub trait MessagingStore: Send + Sync {
+    async fn enqueue_message(&self, input: NewMessageRecord) -> PlatformResult<MessageRecord>;
+    async fn list_messages(&self, query: MessageQuery) -> PlatformResult<Vec<MessageRecord>>;
+    async fn ack_message(&self, topic: &str, id: MessageId) -> PlatformResult<()>;
+}
+
 #[derive(Default)]
 struct PlatformState {
     tenants: HashMap<TenantId, Tenant>,
@@ -74,6 +107,10 @@ struct PlatformState {
     workflows: HashMap<WorkflowId, Workflow>,
     upload_sessions: HashMap<UploadId, UploadSession>,
     content_metadata: HashMap<ContentId, ContentMetadata>,
+    assignments: HashMap<AssignmentId, WorkAssignment>,
+    moderation_content: HashMap<ContentId, ModeratedContent>,
+    messages: HashMap<MessageId, MessageRecord>,
+    messages_by_topic: HashMap<String, VecDeque<MessageId>>,
 }
 
 #[derive(Clone, Default)]
@@ -328,21 +365,6 @@ impl WorkflowStore for InMemoryPersistence {
 }
 
 #[cfg(feature = "db")]
-fn map_db_err(err: sqlx::Error) -> PlatformError {
-    match err {
-        sqlx::Error::RowNotFound => PlatformError::NotFound("record"),
-        sqlx::Error::Database(db_err) => {
-            if db_err.code().as_deref() == Some("23505") {
-                PlatformError::Conflict("record")
-            } else {
-                PlatformError::Internal("database error")
-            }
-        }
-        _ => PlatformError::Internal("database error"),
-    }
-}
-
-#[cfg(feature = "db")]
 pub struct PostgresContentStore {
     pool: Pool<Postgres>,
 }
@@ -380,13 +402,14 @@ impl PostgresContentStore {
         let attributes: serde_json::Value = row.try_get("attributes")?;
         let attributes: HashMap<String, String> = serde_json::from_value(attributes)
             .map_err(|_| PlatformError::Internal("invalid attributes"))?;
+        let size_bytes: Option<i64> = row.try_get("size_bytes")?;
         Ok(ContentMetadata {
             id: row.try_get("id")?,
             tenant_id: row.try_get("tenant_id")?,
             project_id: row.try_get("project_id")?,
             filename: row.try_get("filename")?,
             mime_type: row.try_get("mime_type")?,
-            size_bytes: row.try_get("size_bytes")?,
+            size_bytes: size_bytes.map(|v| v.max(0) as u64),
             checksum: row.try_get("checksum")?,
             storage_path: row.try_get("storage_path")?,
             labels,
@@ -400,6 +423,375 @@ impl PostgresContentStore {
 }
 
 #[cfg(feature = "db")]
+pub struct PostgresOrchestrationStore {
+    pool: Pool<Postgres>,
+}
+
+#[cfg(feature = "db")]
+impl PostgresOrchestrationStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+}
+
+#[cfg(feature = "db")]
+pub struct PostgresModerationStore {
+    pool: Pool<Postgres>,
+}
+
+#[cfg(feature = "db")]
+impl PostgresModerationStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+}
+
+#[cfg(feature = "db")]
+pub struct PostgresMessagingStore {
+    pool: Pool<Postgres>,
+}
+
+#[cfg(feature = "db")]
+impl PostgresMessagingStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+}
+
+#[cfg(feature = "db")]
+#[derive(Debug, Clone, Default)]
+pub struct AgentUpsert {
+    pub id: AgentId,
+    pub hostname: String,
+    pub os: Option<String>,
+    pub arch: Option<String>,
+    pub cpu_cores: Option<i32>,
+    pub memory_bytes: Option<i64>,
+    pub tenant_id: Option<TenantId>,
+    pub project_id: Option<ProjectId>,
+    pub metadata: AgentMetadata,
+    pub status: Option<AgentStatus>,
+    pub last_seen: Option<DateTime<Utc>>,
+}
+
+#[cfg(feature = "db")]
+#[derive(Debug, Clone)]
+pub struct AgentHeartbeatRecord {
+    pub agent_id: AgentId,
+    pub cpu_percent: f64,
+    pub memory_used_bytes: i64,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[cfg(feature = "db")]
+#[derive(Debug, Clone, Default)]
+pub struct AgentQuery {
+    pub tenant_id: Option<TenantId>,
+    pub project_id: Option<ProjectId>,
+    pub hostname_fragment: Option<String>,
+    pub lifecycle_status: Option<String>,
+    pub last_seen_after: Option<DateTime<Utc>>,
+    pub last_seen_before: Option<DateTime<Utc>>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[cfg(feature = "db")]
+#[derive(Debug, Clone)]
+pub struct AgentSummaryRecord {
+    pub id: AgentId,
+    pub hostname: String,
+    pub tenant_id: Option<TenantId>,
+    pub project_id: Option<ProjectId>,
+    pub lifecycle_status: Option<String>,
+    pub last_seen: Option<DateTime<Utc>>,
+    pub cpu_percent: Option<f64>,
+    pub memory_used_bytes: Option<i64>,
+    pub metadata: AgentMetadata,
+}
+
+#[cfg(feature = "db")]
+#[derive(sqlx::FromRow)]
+struct AgentSummaryRow {
+    id: uuid::Uuid,
+    hostname: String,
+    tenant_id: Option<uuid::Uuid>,
+    project_id: Option<uuid::Uuid>,
+    status: Option<String>,
+    last_seen: Option<DateTime<Utc>>,
+    metadata: serde_json::Value,
+    cpu_percent: Option<f64>,
+    memory_used_bytes: Option<i64>,
+}
+
+#[cfg(feature = "db")]
+impl AgentSummaryRow {
+    fn into_record(self) -> PlatformResult<AgentSummaryRecord> {
+        let metadata: AgentMetadata = serde_json::from_value(self.metadata)
+            .map_err(|_| PlatformError::Internal("invalid agent metadata"))?;
+        Ok(AgentSummaryRecord {
+            id: self.id,
+            hostname: self.hostname,
+            tenant_id: self.tenant_id,
+            project_id: self.project_id,
+            lifecycle_status: self.status,
+            last_seen: self.last_seen,
+            cpu_percent: self.cpu_percent,
+            memory_used_bytes: self.memory_used_bytes,
+            metadata,
+        })
+    }
+}
+
+#[cfg(feature = "db")]
+#[derive(sqlx::FromRow)]
+struct AssignmentRow {
+    id: uuid::Uuid,
+    agent_id: uuid::Uuid,
+    workload_id: String,
+    tenant_id: Option<uuid::Uuid>,
+    project_id: Option<uuid::Uuid>,
+    status: String,
+    status_message: Option<String>,
+    metadata: serde_json::Value,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[cfg(feature = "db")]
+impl AssignmentRow {
+    fn into_model(self) -> PlatformResult<WorkAssignment> {
+        let metadata: HashMap<String, String> = serde_json::from_value(self.metadata)
+            .map_err(|_| PlatformError::Internal("invalid assignment metadata"))?;
+        let status = WorkStatus::from_str(self.status.to_ascii_lowercase().as_str())?;
+        Ok(WorkAssignment {
+            id: self.id,
+            agent_id: self.agent_id,
+            workload_id: self.workload_id,
+            tenant_id: self.tenant_id,
+            project_id: self.project_id,
+            status,
+            status_message: self.status_message,
+            metadata,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[cfg(feature = "db")]
+#[derive(sqlx::FromRow)]
+struct ModerationRow {
+    id: uuid::Uuid,
+    tenant_id: uuid::Uuid,
+    project_id: uuid::Uuid,
+    filename: String,
+    mime_type: Option<String>,
+    size_bytes: Option<i64>,
+    state: String,
+    reason: Option<String>,
+    labels: serde_json::Value,
+    attributes: serde_json::Value,
+    submitted_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[cfg(feature = "db")]
+impl ModerationRow {
+    fn into_model(self) -> PlatformResult<ModeratedContent> {
+        let labels: HashMap<String, String> = serde_json::from_value(self.labels)
+            .map_err(|_| PlatformError::Internal("invalid labels"))?;
+        let attributes: HashMap<String, String> = serde_json::from_value(self.attributes)
+            .map_err(|_| PlatformError::Internal("invalid attributes"))?;
+        let state = ModerationState::from_str(self.state.to_ascii_lowercase().as_str())?;
+        Ok(ModeratedContent {
+            id: self.id,
+            tenant_id: self.tenant_id,
+            project_id: self.project_id,
+            filename: self.filename,
+            mime_type: self.mime_type,
+            size_bytes: self.size_bytes.map(|v| v.max(0) as u64),
+            state,
+            reason: self.reason,
+            labels,
+            attributes,
+            submitted_at: self.submitted_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[cfg(feature = "db")]
+#[derive(sqlx::FromRow)]
+struct MessageRow {
+    id: uuid::Uuid,
+    tenant_id: uuid::Uuid,
+    project_id: uuid::Uuid,
+    topic: String,
+    key: Option<String>,
+    payload: Vec<u8>,
+    priority: String,
+    attributes: serde_json::Value,
+    published_at: DateTime<Utc>,
+}
+
+#[cfg(feature = "db")]
+impl MessageRow {
+    fn into_model(self) -> PlatformResult<MessageRecord> {
+        let attributes: HashMap<String, String> = serde_json::from_value(self.attributes)
+            .map_err(|_| PlatformError::Internal("invalid message attributes"))?;
+        let priority = MessagePriority::from_str(self.priority.to_ascii_lowercase().as_str())?;
+        Ok(MessageRecord {
+            id: self.id,
+            tenant_id: self.tenant_id,
+            project_id: self.project_id,
+            topic: self.topic,
+            key: self.key,
+            payload: self.payload,
+            priority,
+            attributes,
+            published_at: self.published_at,
+        })
+    }
+}
+
+#[cfg(feature = "db")]
+pub struct PostgresAgentStore {
+    pool: Pool<Postgres>,
+}
+
+#[cfg(feature = "db")]
+impl PostgresAgentStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+
+    pub async fn upsert_agent(&self, input: AgentUpsert) -> PlatformResult<()> {
+        let metadata = serde_json::to_value(&input.metadata)
+            .map_err(|_| PlatformError::InvalidInput("invalid agent metadata"))?;
+        sqlx::query(
+            "INSERT INTO nodes (
+                id, hostname, os, arch, cpu_cores, memory_bytes,
+                tenant_id, project_id, metadata, status, last_seen, updated_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+            ON CONFLICT (id) DO UPDATE SET
+                hostname = EXCLUDED.hostname,
+                os = EXCLUDED.os,
+                arch = EXCLUDED.arch,
+                cpu_cores = EXCLUDED.cpu_cores,
+                memory_bytes = EXCLUDED.memory_bytes,
+                tenant_id = EXCLUDED.tenant_id,
+                project_id = EXCLUDED.project_id,
+                metadata = EXCLUDED.metadata,
+                status = EXCLUDED.status,
+                last_seen = COALESCE(EXCLUDED.last_seen, nodes.last_seen),
+                updated_at = NOW()
+            ",
+        )
+        .bind(input.id)
+        .bind(input.hostname)
+        .bind(input.os)
+        .bind(input.arch)
+        .bind(input.cpu_cores)
+        .bind(input.memory_bytes)
+        .bind(input.tenant_id)
+        .bind(input.project_id)
+        .bind(metadata)
+        .bind(input.status.map(|s| s.as_str().to_string()))
+        .bind(input.last_seen)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn record_heartbeat(&self, record: AgentHeartbeatRecord) -> PlatformResult<()> {
+        sqlx::query(
+            "INSERT INTO node_metrics (node_id, ts, cpu_percent, memory_used_bytes)
+             VALUES ($1,$2,$3,$4)",
+        )
+        .bind(record.agent_id)
+        .bind(record.timestamp)
+        .bind(record.cpu_percent)
+        .bind(record.memory_used_bytes)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "UPDATE nodes SET last_seen = $2, status = $3, updated_at = NOW() WHERE id = $1",
+        )
+        .bind(record.agent_id)
+        .bind(record.timestamp)
+        .bind("active")
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn query_agents(
+        &self,
+        query: &AgentQuery,
+    ) -> PlatformResult<Vec<AgentSummaryRecord>> {
+        use sqlx::{Postgres, QueryBuilder};
+
+        let mut builder = QueryBuilder::<Postgres>::new(
+            "SELECT n.id, n.hostname, n.tenant_id, n.project_id, n.status, n.last_seen, n.metadata,
+                    metrics.cpu_percent, metrics.memory_used_bytes
+             FROM nodes n
+             LEFT JOIN LATERAL (
+                 SELECT nm.cpu_percent, nm.memory_used_bytes
+                 FROM node_metrics nm
+                 WHERE nm.node_id = n.id
+                 ORDER BY nm.ts DESC
+                 LIMIT 1
+             ) metrics ON TRUE
+             WHERE 1=1",
+        );
+
+        if let Some(tenant_id) = query.tenant_id {
+            builder.push(" AND n.tenant_id = ");
+            builder.push_bind(tenant_id);
+        }
+        if let Some(project_id) = query.project_id {
+            builder.push(" AND n.project_id = ");
+            builder.push_bind(project_id);
+        }
+        if let Some(fragment) = &query.hostname_fragment {
+            builder.push(" AND n.hostname ILIKE ");
+            builder.push_bind(format!("%{}%", fragment));
+        }
+        if let Some(status) = &query.lifecycle_status {
+            builder.push(" AND LOWER(n.status) = LOWER(");
+            builder.push_bind(status);
+            builder.push(")");
+        }
+        if let Some(after) = query.last_seen_after {
+            builder.push(" AND n.last_seen >= ");
+            builder.push_bind(after);
+        }
+        if let Some(before) = query.last_seen_before {
+            builder.push(" AND n.last_seen <= ");
+            builder.push_bind(before);
+        }
+
+        builder.push(" ORDER BY n.last_seen DESC NULLS LAST, n.id ASC");
+
+        if let Some(limit) = query.limit {
+            let limit: i64 = limit.max(0);
+            builder.push(" LIMIT ");
+            builder.push_bind(limit);
+        }
+        if let Some(offset) = query.offset {
+            let offset: i64 = offset.max(0);
+            builder.push(" OFFSET ");
+            builder.push_bind(offset);
+        }
+
+        let rows: Vec<AgentSummaryRow> = builder.build_query_as().fetch_all(&self.pool).await?;
+        rows.into_iter().map(|row| row.into_record()).collect()
+    }
+}
+
+#[cfg(feature = "db")]
 #[async_trait]
 impl ContentStore for PostgresContentStore {
     async fn create_upload_session(&self, session: UploadSession) -> PlatformResult<()> {
@@ -409,7 +801,7 @@ impl ContentStore for PostgresContentStore {
             "INSERT INTO ugc_upload_sessions (
                 id, tenant_id, project_id, content_id, status,
                 created_at, updated_at, expires_at, upload_url, headers
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
         )
         .bind(session.id)
         .bind(session.tenant_id)
@@ -422,8 +814,7 @@ impl ContentStore for PostgresContentStore {
         .bind(session.upload_url)
         .bind(headers)
         .execute(&self.pool)
-        .await
-        .map_err(map_db_err)?;
+        .await?;
         Ok(())
     }
 
@@ -441,7 +832,7 @@ impl ContentStore for PostgresContentStore {
                 expires_at = $8,
                 upload_url = $9,
                 headers = $10
-            WHERE id = $1"
+            WHERE id = $1",
         )
         .bind(session.id)
         .bind(session.tenant_id)
@@ -454,8 +845,7 @@ impl ContentStore for PostgresContentStore {
         .bind(session.upload_url)
         .bind(headers)
         .execute(&self.pool)
-        .await
-        .map_err(map_db_err)?;
+        .await?;
         Ok(())
     }
 
@@ -463,8 +853,7 @@ impl ContentStore for PostgresContentStore {
         let row = sqlx::query("SELECT * FROM ugc_upload_sessions WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
-            .await
-            .map_err(map_db_err)?;
+            .await?;
         if let Some(row) = row {
             Ok(Some(Self::map_upload_row(row).await?))
         } else {
@@ -475,6 +864,7 @@ impl ContentStore for PostgresContentStore {
     async fn record_content_metadata(&self, metadata: ContentMetadata) -> PlatformResult<()> {
         let attributes = serde_json::to_value(&metadata.attributes)
             .map_err(|_| PlatformError::InvalidInput("invalid attributes"))?;
+        let size_bytes = metadata.size_bytes.map(|v| v as i64);
         sqlx::query(
             "INSERT INTO ugc_content_metadata (
                 id, tenant_id, project_id, filename, mime_type, size_bytes,
@@ -495,14 +885,14 @@ impl ContentStore for PostgresContentStore {
                 created_at = EXCLUDED.created_at,
                 updated_at = EXCLUDED.updated_at,
                 uploaded_by = EXCLUDED.uploaded_by,
-                visibility = EXCLUDED.visibility"
+                visibility = EXCLUDED.visibility",
         )
         .bind(metadata.id)
         .bind(metadata.tenant_id)
         .bind(metadata.project_id)
         .bind(metadata.filename)
         .bind(metadata.mime_type)
-        .bind(metadata.size_bytes)
+        .bind(size_bytes)
         .bind(metadata.checksum)
         .bind(metadata.storage_path)
         .bind(metadata.labels)
@@ -512,8 +902,7 @@ impl ContentStore for PostgresContentStore {
         .bind(metadata.uploaded_by)
         .bind(metadata.visibility.as_str())
         .execute(&self.pool)
-        .await
-        .map_err(map_db_err)?;
+        .await?;
         Ok(())
     }
 
@@ -521,8 +910,7 @@ impl ContentStore for PostgresContentStore {
         let row = sqlx::query("SELECT * FROM ugc_content_metadata WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
-            .await
-            .map_err(map_db_err)?;
+            .await?;
         if let Some(row) = row {
             Ok(Some(Self::map_metadata_row(row).await?))
         } else {
@@ -534,9 +922,8 @@ impl ContentStore for PostgresContentStore {
         &self,
         query: &ContentQuery,
     ) -> PlatformResult<Vec<ContentMetadata>> {
-        let mut builder = QueryBuilder::new(
-            "SELECT * FROM ugc_content_metadata WHERE tenant_id = "
-        );
+        let mut builder =
+            QueryBuilder::new("SELECT * FROM ugc_content_metadata WHERE tenant_id = ");
         builder.push_bind(query.tenant_id);
         if let Some(project_id) = query.project_id {
             builder.push(" AND project_id = ");
@@ -565,15 +952,237 @@ impl ContentStore for PostgresContentStore {
         }
 
         let query = builder.build();
-        let rows = query
-            .fetch_all(&self.pool)
-            .await
-            .map_err(map_db_err)?;
+        let rows = query.fetch_all(&self.pool).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             out.push(Self::map_metadata_row(row).await?);
         }
         Ok(out)
+    }
+}
+
+#[cfg(feature = "db")]
+#[async_trait]
+impl OrchestrationStore for PostgresOrchestrationStore {
+    async fn create_assignment(&self, input: NewAssignment) -> PlatformResult<WorkAssignment> {
+        if input.workload_id.trim().is_empty() {
+            return Err(PlatformError::InvalidInput("workload_id required"));
+        }
+        let metadata = serde_json::to_value(&input.metadata)
+            .map_err(|_| PlatformError::InvalidInput("invalid metadata"))?;
+        let row: AssignmentRow = sqlx::query_as(
+            "INSERT INTO orchestration_assignments (
+                id, agent_id, workload_id, tenant_id, project_id, status, status_message, metadata
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            RETURNING id, agent_id, workload_id, tenant_id, project_id, status, status_message, metadata, created_at, updated_at",
+        )
+        .bind(input.id)
+        .bind(input.agent_id)
+        .bind(input.workload_id)
+        .bind(input.tenant_id)
+        .bind(input.project_id)
+        .bind(WorkStatus::Pending.as_str())
+        .bind(Some(String::from("queued")))
+        .bind(metadata)
+        .fetch_one(&self.pool)
+        .await?;
+        row.into_model()
+    }
+
+    async fn update_assignment_status(
+        &self,
+        id: AssignmentId,
+        status: WorkStatus,
+        status_message: Option<String>,
+    ) -> PlatformResult<WorkAssignment> {
+        let row: Option<AssignmentRow> = sqlx::query_as(
+            "UPDATE orchestration_assignments
+             SET status = $2, status_message = $3, updated_at = NOW()
+             WHERE id = $1
+             RETURNING id, agent_id, workload_id, tenant_id, project_id, status, status_message, metadata, created_at, updated_at",
+        )
+        .bind(id)
+        .bind(status.as_str())
+        .bind(status_message.clone())
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => row.into_model(),
+            None => Err(PlatformError::NotFound("assignment")),
+        }
+    }
+
+    async fn list_assignments(
+        &self,
+        query: AssignmentQuery,
+    ) -> PlatformResult<Vec<WorkAssignment>> {
+        let mut builder = QueryBuilder::<Postgres>::new(
+            "SELECT id, agent_id, workload_id, tenant_id, project_id, status, status_message, metadata, created_at, updated_at
+             FROM orchestration_assignments WHERE 1=1",
+        );
+
+        if let Some(agent_id) = query.agent_id {
+            builder.push(" AND agent_id = ");
+            builder.push_bind(agent_id);
+        }
+        if let Some(tenant_id) = query.tenant_id {
+            builder.push(" AND tenant_id = ");
+            builder.push_bind(tenant_id);
+        }
+        if let Some(project_id) = query.project_id {
+            builder.push(" AND project_id = ");
+            builder.push_bind(project_id);
+        }
+        if let Some(status) = query.status {
+            builder.push(" AND status = ");
+            builder.push_bind(status.as_str());
+        }
+        builder.push(" ORDER BY updated_at DESC");
+
+        let rows: Vec<AssignmentRow> = builder.build_query_as().fetch_all(&self.pool).await?;
+        rows.into_iter().map(|row| row.into_model()).collect()
+    }
+}
+
+#[cfg(feature = "db")]
+#[async_trait]
+impl ModerationStore for PostgresModerationStore {
+    async fn create_content(&self, input: NewModeratedContent) -> PlatformResult<ModeratedContent> {
+        let labels = serde_json::to_value(&input.labels)
+            .map_err(|_| PlatformError::InvalidInput("invalid labels"))?;
+        let attributes = serde_json::to_value(&input.attributes)
+            .map_err(|_| PlatformError::InvalidInput("invalid attributes"))?;
+        let row: ModerationRow = sqlx::query_as(
+            "INSERT INTO ugc_moderation_content (
+                id, tenant_id, project_id, filename, mime_type, size_bytes, state, reason, labels, attributes
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            RETURNING id, tenant_id, project_id, filename, mime_type, size_bytes, state, reason, labels, attributes, submitted_at, updated_at",
+        )
+        .bind(input.id)
+        .bind(input.tenant_id)
+        .bind(input.project_id)
+        .bind(input.filename)
+        .bind(input.mime_type)
+        .bind(input.size_bytes.map(|v| v as i64))
+        .bind(ModerationState::Pending.as_str())
+        .bind::<Option<String>>(None)
+        .bind(labels)
+        .bind(attributes)
+        .fetch_one(&self.pool)
+        .await?;
+        row.into_model()
+    }
+
+    async fn update_content_state(
+        &self,
+        id: ContentId,
+        state: ModerationState,
+        reason: Option<String>,
+    ) -> PlatformResult<ModeratedContent> {
+        let row: Option<ModerationRow> = sqlx::query_as(
+            "UPDATE ugc_moderation_content
+             SET state = $2, reason = $3, updated_at = NOW()
+             WHERE id = $1
+             RETURNING id, tenant_id, project_id, filename, mime_type, size_bytes, state, reason, labels, attributes, submitted_at, updated_at",
+        )
+        .bind(id)
+        .bind(state.as_str())
+        .bind(reason)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => row.into_model(),
+            None => Err(PlatformError::NotFound("ugc_content")),
+        }
+    }
+
+    async fn list_content(&self, query: ModerationQuery) -> PlatformResult<Vec<ModeratedContent>> {
+        let mut builder = QueryBuilder::<Postgres>::new(
+            "SELECT id, tenant_id, project_id, filename, mime_type, size_bytes, state, reason, labels, attributes, submitted_at, updated_at
+             FROM ugc_moderation_content WHERE 1=1",
+        );
+        if let Some(tenant_id) = query.tenant_id {
+            builder.push(" AND tenant_id = ");
+            builder.push_bind(tenant_id);
+        }
+        if let Some(project_id) = query.project_id {
+            builder.push(" AND project_id = ");
+            builder.push_bind(project_id);
+        }
+        if let Some(state) = query.state {
+            builder.push(" AND state = ");
+            builder.push_bind(state.as_str());
+        }
+        builder.push(" ORDER BY submitted_at DESC");
+        let rows: Vec<ModerationRow> = builder.build_query_as().fetch_all(&self.pool).await?;
+        rows.into_iter().map(|row| row.into_model()).collect()
+    }
+}
+
+#[cfg(feature = "db")]
+#[async_trait]
+impl MessagingStore for PostgresMessagingStore {
+    async fn enqueue_message(&self, input: NewMessageRecord) -> PlatformResult<MessageRecord> {
+        if input.topic.trim().is_empty() {
+            return Err(PlatformError::InvalidInput("topic required"));
+        }
+        let attributes = serde_json::to_value(&input.attributes)
+            .map_err(|_| PlatformError::InvalidInput("invalid attributes"))?;
+        let row: MessageRow = sqlx::query_as(
+            "INSERT INTO messaging_messages (
+                id, tenant_id, project_id, topic, key, payload, priority, attributes
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            RETURNING id, tenant_id, project_id, topic, key, payload, priority, attributes, published_at",
+        )
+        .bind(input.id)
+        .bind(input.tenant_id)
+        .bind(input.project_id)
+        .bind(&input.topic)
+        .bind(input.key)
+        .bind(input.payload)
+        .bind(input.priority.as_str())
+        .bind(attributes)
+        .fetch_one(&self.pool)
+        .await?;
+        row.into_model()
+    }
+
+    async fn list_messages(&self, query: MessageQuery) -> PlatformResult<Vec<MessageRecord>> {
+        if query.topic.trim().is_empty() {
+            return Err(PlatformError::InvalidInput("topic required"));
+        }
+        let mut builder = QueryBuilder::<Postgres>::new(
+            "SELECT id, tenant_id, project_id, topic, key, payload, priority, attributes, published_at
+             FROM messaging_messages WHERE topic = ",
+        );
+        builder.push_bind(&query.topic);
+        if let Some(tenant_id) = query.tenant_id {
+            builder.push(" AND tenant_id = ");
+            builder.push_bind(tenant_id);
+        }
+        if let Some(project_id) = query.project_id {
+            builder.push(" AND project_id = ");
+            builder.push_bind(project_id);
+        }
+        builder.push(" ORDER BY published_at DESC");
+        if let Some(limit) = query.limit {
+            builder.push(" LIMIT ");
+            builder.push_bind(limit as i64);
+        }
+        let rows: Vec<MessageRow> = builder.build_query_as().fetch_all(&self.pool).await?;
+        rows.into_iter().map(|row| row.into_model()).collect()
+    }
+
+    async fn ack_message(&self, topic: &str, id: MessageId) -> PlatformResult<()> {
+        let result = sqlx::query("DELETE FROM messaging_messages WHERE id = $1 AND topic = $2")
+            .bind(id)
+            .bind(topic)
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("message"));
+        }
+        Ok(())
     }
 }
 
@@ -615,9 +1224,7 @@ impl ContentStore for InMemoryPersistence {
         if !state.projects.contains_key(&metadata.project_id) {
             return Err(PlatformError::NotFound("project"));
         }
-        state
-            .content_metadata
-            .insert(metadata.id, metadata);
+        state.content_metadata.insert(metadata.id, metadata);
         Ok(())
     }
 
@@ -646,10 +1253,10 @@ impl ContentStore for InMemoryPersistence {
                 if let Some(term) = &query.search_term {
                     let term_lower = term.to_ascii_lowercase();
                     let filename_match = item.filename.to_ascii_lowercase().contains(&term_lower);
-                    let attribute_match = item
-                        .attributes
-                        .iter()
-                        .any(|(k, v)| k.to_ascii_lowercase().contains(&term_lower) || v.to_ascii_lowercase().contains(&term_lower));
+                    let attribute_match = item.attributes.iter().any(|(k, v)| {
+                        k.to_ascii_lowercase().contains(&term_lower)
+                            || v.to_ascii_lowercase().contains(&term_lower)
+                    });
                     if !filename_match && !attribute_match {
                         return false;
                     }
@@ -671,11 +1278,257 @@ impl ContentStore for InMemoryPersistence {
 
         let offset = query.offset.unwrap_or(0) as usize;
         let limit = query.limit.unwrap_or(entries.len() as u32) as usize;
-        let slice = entries
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect();
+        let slice = entries.into_iter().skip(offset).take(limit).collect();
         Ok(slice)
+    }
+}
+
+#[async_trait]
+impl OrchestrationStore for InMemoryPersistence {
+    async fn create_assignment(&self, input: NewAssignment) -> PlatformResult<WorkAssignment> {
+        if input.workload_id.trim().is_empty() {
+            return Err(PlatformError::InvalidInput("workload_id required"));
+        }
+        if let Some(tenant_id) = input.tenant_id {
+            if !self.state.read().tenants.contains_key(&tenant_id) {
+                return Err(PlatformError::NotFound("tenant"));
+            }
+        }
+        if let Some(project_id) = input.project_id {
+            if !self.state.read().projects.contains_key(&project_id) {
+                return Err(PlatformError::NotFound("project"));
+            }
+        }
+        let mut state = self.state.write();
+        if state.assignments.contains_key(&input.id) {
+            return Err(PlatformError::Conflict("assignment"));
+        }
+        let now = Utc::now();
+        let assignment = WorkAssignment {
+            id: input.id,
+            agent_id: input.agent_id,
+            workload_id: input.workload_id,
+            tenant_id: input.tenant_id,
+            project_id: input.project_id,
+            status: WorkStatus::Pending,
+            status_message: Some("queued".to_string()),
+            metadata: input.metadata,
+            created_at: now,
+            updated_at: now,
+        };
+        state.assignments.insert(assignment.id, assignment.clone());
+        Ok(assignment)
+    }
+
+    async fn update_assignment_status(
+        &self,
+        id: AssignmentId,
+        status: WorkStatus,
+        status_message: Option<String>,
+    ) -> PlatformResult<WorkAssignment> {
+        let mut state = self.state.write();
+        let assignment = state
+            .assignments
+            .get_mut(&id)
+            .ok_or(PlatformError::NotFound("assignment"))?;
+        assignment.status = status;
+        assignment.status_message = status_message;
+        assignment.updated_at = Utc::now();
+        Ok(assignment.clone())
+    }
+
+    async fn list_assignments(
+        &self,
+        query: AssignmentQuery,
+    ) -> PlatformResult<Vec<WorkAssignment>> {
+        let state = self.state.read();
+        let mut assignments: Vec<_> = state
+            .assignments
+            .values()
+            .filter(|assignment| {
+                if let Some(agent_id) = query.agent_id {
+                    if assignment.agent_id != agent_id {
+                        return false;
+                    }
+                }
+                if let Some(tenant_id) = query.tenant_id {
+                    if assignment.tenant_id != Some(tenant_id) {
+                        return false;
+                    }
+                }
+                if let Some(project_id) = query.project_id {
+                    if assignment.project_id != Some(project_id) {
+                        return false;
+                    }
+                }
+                if let Some(status) = &query.status {
+                    if &assignment.status != status {
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect();
+        assignments.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(assignments)
+    }
+}
+
+#[async_trait]
+impl ModerationStore for InMemoryPersistence {
+    async fn create_content(&self, input: NewModeratedContent) -> PlatformResult<ModeratedContent> {
+        let mut state = self.state.write();
+        if state.moderation_content.contains_key(&input.id) {
+            return Err(PlatformError::Conflict("ugc_content"));
+        }
+        if !state.tenants.contains_key(&input.tenant_id) {
+            return Err(PlatformError::NotFound("tenant"));
+        }
+        if !state.projects.contains_key(&input.project_id) {
+            return Err(PlatformError::NotFound("project"));
+        }
+        let now = Utc::now();
+        let record = ModeratedContent {
+            id: input.id,
+            tenant_id: input.tenant_id,
+            project_id: input.project_id,
+            filename: input.filename,
+            mime_type: input.mime_type,
+            size_bytes: input.size_bytes,
+            state: ModerationState::Pending,
+            reason: None,
+            labels: input.labels,
+            attributes: input.attributes,
+            submitted_at: now,
+            updated_at: now,
+        };
+        state.moderation_content.insert(record.id, record.clone());
+        Ok(record)
+    }
+
+    async fn update_content_state(
+        &self,
+        id: ContentId,
+        state: ModerationState,
+        reason: Option<String>,
+    ) -> PlatformResult<ModeratedContent> {
+        let mut state_data = self.state.write();
+        let record = state_data
+            .moderation_content
+            .get_mut(&id)
+            .ok_or(PlatformError::NotFound("ugc_content"))?;
+        record.state = state;
+        record.reason = reason;
+        record.updated_at = Utc::now();
+        Ok(record.clone())
+    }
+
+    async fn list_content(&self, query: ModerationQuery) -> PlatformResult<Vec<ModeratedContent>> {
+        let state = self.state.read();
+        let mut items: Vec<_> = state
+            .moderation_content
+            .values()
+            .filter(|item| {
+                if let Some(tenant_id) = query.tenant_id {
+                    if item.tenant_id != tenant_id {
+                        return false;
+                    }
+                }
+                if let Some(project_id) = query.project_id {
+                    if item.project_id != project_id {
+                        return false;
+                    }
+                }
+                if let Some(state_filter) = &query.state {
+                    if &item.state != state_filter {
+                        return false;
+                    }
+                }
+                true
+            })
+            .cloned()
+            .collect();
+        items.sort_by(|a, b| b.submitted_at.cmp(&a.submitted_at));
+        Ok(items)
+    }
+}
+
+#[async_trait]
+impl MessagingStore for InMemoryPersistence {
+    async fn enqueue_message(&self, input: NewMessageRecord) -> PlatformResult<MessageRecord> {
+        let mut state = self.state.write();
+        if !state.tenants.contains_key(&input.tenant_id) {
+            return Err(PlatformError::NotFound("tenant"));
+        }
+        if !state.projects.contains_key(&input.project_id) {
+            return Err(PlatformError::NotFound("project"));
+        }
+        if state.messages.contains_key(&input.id) {
+            return Err(PlatformError::Conflict("message"));
+        }
+        let record = MessageRecord {
+            id: input.id,
+            tenant_id: input.tenant_id,
+            project_id: input.project_id,
+            topic: input.topic.clone(),
+            key: input.key,
+            payload: input.payload,
+            priority: input.priority,
+            attributes: input.attributes,
+            published_at: Utc::now(),
+        };
+        state.messages.insert(record.id, record.clone());
+        state
+            .messages_by_topic
+            .entry(record.topic.clone())
+            .or_insert_with(VecDeque::new)
+            .push_back(record.id);
+        Ok(record)
+    }
+
+    async fn list_messages(&self, query: MessageQuery) -> PlatformResult<Vec<MessageRecord>> {
+        if query.topic.trim().is_empty() {
+            return Err(PlatformError::InvalidInput("topic required"));
+        }
+        let state = self.state.read();
+        let mut results = Vec::new();
+        if let Some(queue) = state.messages_by_topic.get(&query.topic) {
+            for message_id in queue {
+                if let Some(message) = state.messages.get(message_id) {
+                    if let Some(tenant_id) = query.tenant_id {
+                        if message.tenant_id != tenant_id {
+                            continue;
+                        }
+                    }
+                    if let Some(project_id) = query.project_id {
+                        if message.project_id != project_id {
+                            continue;
+                        }
+                    }
+                    results.push(message.clone());
+                    if let Some(limit) = query.limit {
+                        if results.len() as u32 >= limit {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(results)
+    }
+
+    async fn ack_message(&self, topic: &str, id: MessageId) -> PlatformResult<()> {
+        let mut state = self.state.write();
+        if state.messages.remove(&id).is_none() {
+            return Err(PlatformError::NotFound("message"));
+        }
+        if let Some(queue) = state.messages_by_topic.get_mut(topic) {
+            queue.retain(|msg_id| msg_id != &id);
+            if queue.is_empty() {
+                state.messages_by_topic.remove(topic);
+            }
+        }
+        Ok(())
     }
 }

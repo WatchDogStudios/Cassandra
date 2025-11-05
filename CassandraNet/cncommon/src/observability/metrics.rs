@@ -70,10 +70,7 @@ impl InMemoryMetricsRegistry {
 
     pub fn record(&self, point: MetricPoint) {
         let mut guard = self.inner.write().expect("metrics write lock poisoned");
-        guard
-            .entry(point.name.clone())
-            .or_default()
-            .push(point);
+        guard.entry(point.name.clone()).or_default().push(point);
     }
 
     pub fn increment_counter(
@@ -132,26 +129,26 @@ impl InMemoryMetricsRegistry {
     }
 }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        #[test]
-        fn records_and_reads_counter() {
-            let registry = InMemoryMetricsRegistry::new();
-            registry.increment_counter("ugc_uploads", 1.0, None);
-            let snapshot = registry.snapshot("ugc_uploads");
-            assert_eq!(snapshot.len(), 1);
-            assert_eq!(snapshot[0].kind, MetricKind::Counter);
-            assert_eq!(snapshot[0].value, 1.0);
-        }
-
-        #[test]
-        fn supports_histogram_observations() {
-            let registry = InMemoryMetricsRegistry::new();
-            registry.observe_histogram("upload_latency", 42.0, None);
-            let snapshot = registry.snapshot("upload_latency");
-            assert_eq!(snapshot.len(), 1);
-            assert_eq!(snapshot[0].kind, MetricKind::Histogram);
-        }
+    #[test]
+    fn records_and_reads_counter() {
+        let registry = InMemoryMetricsRegistry::new();
+        registry.increment_counter("ugc_uploads", 1.0, None);
+        let snapshot = registry.snapshot("ugc_uploads");
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].kind, MetricKind::Counter);
+        assert_eq!(snapshot[0].value, 1.0);
     }
+
+    #[test]
+    fn supports_histogram_observations() {
+        let registry = InMemoryMetricsRegistry::new();
+        registry.observe_histogram("upload_latency", 42.0, None);
+        let snapshot = registry.snapshot("upload_latency");
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].kind, MetricKind::Histogram);
+    }
+}

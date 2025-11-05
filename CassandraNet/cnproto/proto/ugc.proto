@@ -1,0 +1,72 @@
+syntax = "proto3";
+package cassandra.ugc.v1;
+
+// ContentState tracks moderation lifecycle for UGC assets.
+enum ContentState {
+  CONTENT_STATE_UNSPECIFIED = 0;
+  CONTENT_STATE_PENDING = 1;
+  CONTENT_STATE_APPROVED = 2;
+  CONTENT_STATE_REJECTED = 3;
+  CONTENT_STATE_ARCHIVED = 4;
+}
+
+// ContentItem is metadata returned to clients for a given content record.
+message ContentItem {
+  string content_id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  string filename = 4;
+  string mime_type = 5;
+  uint64 size_bytes = 6;
+  ContentState state = 7;
+  string reason = 8;
+  int64 submitted_at_unix_ms = 9;
+  int64 updated_at_unix_ms = 10;
+  map<string, string> labels = 11;
+  map<string, string> attributes = 12;
+}
+
+// SubmitContentRequest queues a new UGC submission.
+message SubmitContentRequest {
+  string content_id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  string filename = 4;
+  string mime_type = 5;
+  uint64 size_bytes = 6;
+  map<string, string> labels = 7;
+  map<string, string> attributes = 8;
+}
+
+message SubmitContentResponse {
+  ContentItem item = 1;
+}
+
+// ReviewContentRequest finalizes a moderation decision for queued content.
+message ReviewContentRequest {
+  string content_id = 1;
+  string tenant_id = 2;
+  string project_id = 3;
+  ContentState state = 4;
+  string reason = 5;
+}
+
+message ReviewContentResponse {
+  ContentItem item = 1;
+}
+
+message ListContentRequest {
+  string tenant_id = 1;
+  string project_id = 2;
+  ContentState state_filter = 3;
+}
+
+message ListContentResponse {
+  repeated ContentItem items = 1;
+}
+
+service UgcService {
+  rpc SubmitContent(SubmitContentRequest) returns (SubmitContentResponse);
+  rpc ReviewContent(ReviewContentRequest) returns (ReviewContentResponse);
+  rpc ListContent(ListContentRequest) returns (ListContentResponse);
+}
