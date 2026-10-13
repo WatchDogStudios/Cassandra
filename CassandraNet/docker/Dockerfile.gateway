@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.6
 
-FROM rust:1.79-bullseye AS builder
+FROM rust:1.95-bookworm AS builder
 WORKDIR /workspace
 
 RUN apt-get update \
@@ -9,33 +9,29 @@ RUN apt-get update \
 
 ENV CARGO_TERM_COLOR=always
 
-COPY Cargo.toml Cargo.lock ./
-COPY cnagent/Cargo.toml cnagent/Cargo.toml
-COPY cnbackend/Cargo.toml cnbackend/Cargo.toml
-COPY cnclient/Cargo.toml cnclient/Cargo.toml
-COPY cncommon/Cargo.toml cncommon/Cargo.toml
-COPY cnlibfrontend/Cargo.toml cnlibfrontend/Cargo.toml
-COPY cnproto/Cargo.toml cnproto/Cargo.toml
-COPY core/Cargo.toml core/Cargo.toml
-COPY gateway/Cargo.toml gateway/Cargo.toml
-COPY cnsdk_c/Cargo.toml cnsdk_c/Cargo.toml
-
 COPY . .
 
-RUN cargo build --release -p cngateway --features db
+RUN cargo build --release --locked -p cngateway --features db
 
 FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /workspace/target/release/cngateway /usr/local/bin/cngateway
 
 ENV CASS__HTTP__BIND_ADDR=0.0.0.0:8080 \
+    CASS_BUILD_STORAGE_DIR=/data/builds \
     RUST_LOG=info
 
 EXPOSE 8080 8081
+
+# A named volume mounted at /data/builds inherits this ownership.
+RUN useradd --system --uid 10001 --no-create-home cass \
+    && mkdir -p /data/builds \
+    && chown cass /data/builds
+USER cass
 
 ENTRYPOINT ["cngateway"]

@@ -15,13 +15,36 @@ pub type ContentId = Uuid;
 pub type UploadId = Uuid;
 pub type AssignmentId = Uuid;
 pub type MessageId = Uuid;
+pub type UserId = Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tenant {
     pub id: TenantId,
     pub name: String,
-    pub created_at: DateTime<Utc>,
+    pub slug: String,
+    /// Subscription/entitlement plan identifier (e.g. "free", "pro").
+    pub plan: String,
+    pub description: Option<String>,
     pub settings: TenantSettings,
+    pub quota_agents: i32,
+    pub quota_storage_bytes: i64,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct User {
+    pub id: UserId,
+    pub email: String,
+    pub password_hash: String,
+    pub display_name: Option<String>,
+    pub tenant_id: Option<TenantId>,
+    pub scopes: Vec<Scope>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub last_login_at: Option<DateTime<Utc>>,
+    pub is_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,7 +52,12 @@ pub struct Project {
     pub id: ProjectId,
     pub tenant_id: TenantId,
     pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    pub settings: serde_json::Value,
+    pub is_active: bool,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

@@ -25,7 +25,7 @@ impl TenantCreateRequest {
             name: name.into(),
             idempotency_key: None,
             settings: None,
-            bootstrap_scopes: vec![Scope::Admin],
+            bootstrap_scopes: vec![Scope::AdminRead, Scope::AdminWrite],
             bootstrap_scripts: vec![],
         }
     }
@@ -131,16 +131,25 @@ impl ProvisioningService {
             return Err(PlatformError::InvalidInput("tenant name required"));
         }
 
+        let now = Utc::now();
+        let slug = name.to_lowercase().replace(' ', "-");
         let tenant = Tenant {
             id: Uuid::new_v4(),
-            name,
-            created_at: Utc::now(),
+            name: name.clone(),
+            slug,
+            plan: "free".into(),
+            description: None,
             settings: settings.unwrap_or_default(),
+            quota_agents: 100,
+            quota_storage_bytes: 10737418240, // 10 GB
+            is_active: true,
+            created_at: now,
+            updated_at: now,
         };
         self.tenants.insert_tenant(tenant.clone())?;
 
         let scopes = if bootstrap_scopes.is_empty() {
-            vec![Scope::Admin]
+            vec![Scope::AdminRead, Scope::AdminWrite]
         } else {
             bootstrap_scopes
         };
@@ -200,11 +209,18 @@ impl ProvisioningService {
             idempotency_key,
             bootstrap_scripts,
         } = request;
+        let now = Utc::now();
+        let slug = name.to_lowercase().replace(' ', "-");
         let project = Project {
             id: Uuid::new_v4(),
             tenant_id,
-            name,
-            created_at: Utc::now(),
+            name: name.clone(),
+            slug,
+            description: None,
+            settings: serde_json::json!({}),
+            is_active: true,
+            created_at: now,
+            updated_at: now,
         };
         self.projects.insert_project(project.clone())?;
         let scripts = if bootstrap_scripts.is_empty() {
@@ -441,12 +457,14 @@ mod tests {
 
         let mut metadata_tags = HashMap::new();
         metadata_tags.insert("region".into(), "us-east".into());
-        let mut agent_options = AgentRegistrationOptions::default();
-        agent_options.metadata = Some(AgentMetadata {
-            capabilities: vec!["compute".into()],
-            tags: metadata_tags,
-        });
-        agent_options.bootstrap_commands = vec!["install.sh".into()];
+        let agent_options = AgentRegistrationOptions {
+            metadata: Some(AgentMetadata {
+                capabilities: vec!["compute".into()],
+                tags: metadata_tags,
+            }),
+            bootstrap_commands: vec!["install.sh".into()],
+            ..Default::default()
+        };
         let provisioned = provisioning
             .register_agent_with_options(tenant.id, project.id, "agent-1", agent_options)
             .unwrap();

@@ -1,4 +1,4 @@
-/// Copyright (C) 2024-present WD Studios L.L.C. & CassandraNet Contributors.
+// Copyright (C) 2024-present WD Studios L.L.C. & CassandraNet Contributors.
 
 pub struct CnProfile;
 
@@ -22,17 +22,17 @@ pub trait Profiler {
 
 /// Public interface for profiling with CassandraNet. This is a wrapper around the superluminal_perf crate. if you want to use a different profiler, you can implement this trait for that profiler.
 impl Profiler for CnProfile {
-    fn start_event(event_name: &'static str) {}
+    fn start_event(_event_name: &'static str) {}
 
     fn end_event() {}
 
-    fn set_thread_name(thread_name: &str) {}
+    fn set_thread_name(_thread_name: &str) {}
 
-    fn start_event_with_data(event_name: &'static str, data: &str, color: u32) {}
+    fn start_event_with_data(_event_name: &'static str, _data: &str, _color: u32) {}
 
-    fn unregister_fiber(in_fiber_id: u64) {}
+    fn unregister_fiber(_in_fiber_id: u64) {}
 
-    fn begin_fiber_switch(in_current_fiber_id: u64, in_new_fiber_id: u64) {}
+    fn begin_fiber_switch(_in_current_fiber_id: u64, _in_new_fiber_id: u64) {}
 
-    fn end_fiber_switch(in_fiber_id: u64) {}
+    fn end_fiber_switch(_in_fiber_id: u64) {}
 }

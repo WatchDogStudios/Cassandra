@@ -35,7 +35,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock","std"]
 optional = true
 version = "0.7"
 default-features = false
-features = ["runtime-tokio-native-tls","postgres","macros","uuid","migrate"]
+features = ["runtime-tokio-native-tls","postgres","macros","uuid","migrate","chrono"]
 
 [features]
 # placeholder for future database/backends

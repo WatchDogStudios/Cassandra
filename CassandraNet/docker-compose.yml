@@ -1,12 +1,10 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:15-alpine
     environment:
       POSTGRES_DB: "${POSTGRES_DB:-cassandra}"
       POSTGRES_USER: "${POSTGRES_USER:-cassandra}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cassandra}"]
       interval: 5s
@@ -21,12 +19,26 @@ services:
       dockerfile: docker/Dockerfile.gateway
     environment:
       CASS__HTTP__BIND_ADDR: "0.0.0.0:8080"
-      CASS__DATABASE__URL: "${CASS__DATABASE__URL}"
-      CASS_JWT_SECRET: "${CASS_JWT_SECRET}"
+      CASS__DATABASE__URL: "${CASS__DATABASE__URL:?set CASS__DATABASE__URL in .env}"
+      CASS_JWT_SECRET: "${CASS_JWT_SECRET:?set CASS_JWT_SECRET in .env}"
+      CASS_ADMIN_PASSWORD: "${CASS_ADMIN_PASSWORD:?set CASS_ADMIN_PASSWORD in .env}"
+      CASS_COOKIE_SECURE: "${CASS_COOKIE_SECURE:-true}"
+      # Bootstrap keys: the console key from .env plus the agent's own key.
+      CASS_API_KEYS: "${CASS_API_KEYS},${CASS_AGENT_SECRET:?set CASS_AGENT_SECRET in .env}:agent:execute"
+      CASS_RATE_LIMITS: "${CASS_RATE_LIMITS:-}"
+      CASS_REDIS_URL: "redis://dragonfly:6379"
+      COLLECTOR_OTLP_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
       RUST_LOG: "${RUST_LOG:-info}"
+    volumes:
+      - builds-data:/data/builds
     depends_on:
       postgres:
         condition: service_healthy
+      dragonfly:
+        condition: service_started
+      jaeger:
+        condition: service_started
     ports:
       - "8080:8080"
       - "8081:8081"
@@ -36,10 +48,13 @@ services:
       context: .
       dockerfile: docker/Dockerfile.agent
     environment:
-      CASS__HTTP__BIND_ADDR: "gateway:8080"
-      CASS_AGENT_TENANT_ID: "demo-tenant"
-      CASS_AGENT_PROJECT_ID: "demo-project"
-      RUST_LOG: "info"
+      CASS_GATEWAY_ADDR: "http://gateway:8081"
+      CASS_AGENT_SECRET: "${CASS_AGENT_SECRET:?set CASS_AGENT_SECRET in .env}"
+      # Opt-in: lets operators run commands and scripts inside this container.
+      CASS_AGENT_ALLOW_EXEC: "${CASS_AGENT_ALLOW_EXEC:-false}"
+      RUST_LOG: "${RUST_LOG:-info}"
+    # The `restart` command exits with code 75 and relies on this policy.
+    restart: on-failure
     depends_on:
       - gateway
 
@@ -52,5 +67,22 @@ services:
     ports:
       - "5173:80"
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.50
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # UI only; the gateway reaches OTLP on the compose network
+
+  # Unauthenticated cache: reachable only from the compose network.
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly
+    ulimits:
+      memlock: -1
+    volumes:
+      - dragonfly-data:/data
+
 volumes:
   postgres-data:
+  dragonfly-data:
+  builds-data:

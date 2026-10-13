@@ -2,198 +2,209 @@
 
 ![Cassandra Logo](data/images/branding/CASS_LOGO_CORE_.svg)
 
-A Rust & Go powered server management platform for games. Used internally at WD Studios & is now being open-sourced, and ported over to rust.
+A Rust & Go powered server management platform for games. Used internally at WD Studios & now open-sourced.
 
-## What is this really?
+## Quick Start (Docker)
 
-CassandraNet simply just manages multiple servers (Virtual Machines, etc...) in one organized portal & API.
+Get the full stack running in under 5 minutes:
 
-It helps server owners have a unified portal for all of their server needs, like connecting with authenticated users, verifying user sessions, banning players, managing server load, and so much more.
+```bash
+# Clone the repository
+git clone https://github.com/WatchDogStudios/Cassandra.git
+cd Cassandra/CassandraNet
 
-CassandraNet also gives you the ability to add "Plugins/Add-ons" to your instance to essentially fulfill more needs for your use case.
+# Copy environment config, then fill in every secret (see the comments inside)
+cp .env.example .env
 
-## How would i Intergrate this within my own systems?
+# Start all services
+docker compose up -d
+```
 
-For example, if you use Azure Playfab for managing your games servers, ever since they [Sunset Legacy Multiplayer Servers](https://community.playfab.com/questions/58173/i-wanted-to-host-custom-dedicated-servers-not-on-a.html), You can't connect non-azure servers to Playfab anymore, so you are left with no other option.
+Open [http://localhost:5173](http://localhost:5173) to access the operator console.
 
-What we recommend, is that you use Services like Playfab if you want a full live-ops solution right off the bat.
+**Login:**
+- Email: `admin@localhost`
+- Password: the `CASS_ADMIN_PASSWORD` you set in `.env`
 
-If you want a more managed solution with more control, CassandraNet is the way to go.
+See [docs/docker.md](CassandraNet/docs/docker.md) for detailed Docker configuration options.
 
-## Code-of-conduct
+## What is CassandraNet?
 
-CassandraNet follows the [Rust Lang's Code-of-Conduct](https://www.rust-lang.org/policies/code-of-conduct).
+CassandraNet manages multiple servers (Virtual Machines, containers, etc.) through a unified portal & API. It helps server owners:
+
+- Connect and authenticate users across game servers
+- Verify user sessions and manage player bans
+- Monitor server load and agent health in real-time
+- Orchestrate workloads across your fleet
+- Extend functionality via plugins/add-ons
+
+## Architecture Overview
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| Gateway | Rust (Axum) | HTTP/gRPC API, auth, metrics |
+| Agent | Rust | Runs on each managed node, reports telemetry |
+| Console | React + Vite | Operator dashboard |
+| Peripherals | Go | Messaging, orchestration, UGC services |
+| Database | PostgreSQL | Persistent storage |
+
+## Running Locally
+
+### With Docker Compose (Recommended)
+
+See [Quick Start](#quick-start-docker) above. The compose stack includes:
+- PostgreSQL 15 database
+- Gateway API (ports 8080/8081)
+- Agent (connects to gateway with `CASS_AGENT_SECRET`)
+- Console UI (port 5173)
+- Dragonfly cache and Jaeger tracing (UI on port 16686)
+
+### Without Docker
+
+**Prerequisites:**
+- Rust (stable toolchain) + Cargo
+- Node.js 18+
+- Go 1.22+
+- PostgreSQL (optional, for `db` feature)
+
+**Build & Run** (from the `CassandraNet/` directory):
+
+```bash
+# Build all crates
+cargo build
+
+# Run the gateway. It refuses to start without a JWT secret. Without
+# CASS_ADMIN_PASSWORD it logs a generated password for admin@localhost.
+export CASS_JWT_SECRET="$(openssl rand -hex 32)"
+cargo run -p cngateway
+
+# Run an agent; its key needs the agent:execute scope
+# (e.g. start the gateway with CASS_API_KEYS="my-agent-key:agent:execute").
+# Add --allow-exec and/or --deploy-dir <dir> to accept commands, scripts and builds.
+cargo run -p cnagent -- --secret my-agent-key
+
+# In another terminal, run the console
+cd frontend/console
+npm ci
+npm run dev
+```
+
+## Configuration Reference
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `CASS_JWT_SECRET` | HS256 signing secret (use 32+ random bytes) | Required |
+| `CASS_ADMIN_PASSWORD` | Password for `admin@localhost` | Generated and logged (in-memory mode only) |
+| `CASS__DATABASE__URL` | PostgreSQL connection string (`db` builds) | - |
+| `CASS__HTTP__BIND_ADDR` | Gateway HTTP bind address; gRPC uses port + 1 | `0.0.0.0:8080` |
+| `CASS_API_KEYS` | Bootstrap API keys, `key:scope\|scope,...` | - |
+| `CASS_COOKIE_SECURE` | `Secure` flag on the refresh cookie | `true` |
+| `CASS_RATE_LIMITS` | Per-route overrides, `route:limit:window_secs,...` | Built-in defaults |
+| `CASS_REDIS_URL` | Redis/Dragonfly for the agent registry | In-memory |
+| `CASS_STORAGE_BASE_URL` | Base URL for UGC upload targets | `s3://cassandranet` |
+| `CASS_BUILD_STORAGE_DIR` | Where uploaded builds are stored | `data/builds` (`/data/builds` in the image) |
+| `CASS_MAX_BUILD_BYTES` | Largest accepted build upload | 2 GiB |
+| `COLLECTOR_OTLP_ENABLED` | Export traces via OTLP (`OTEL_EXPORTER_OTLP_ENDPOINT`) | Off |
+| `CASS_GATEWAY_ADDR` | Agent: gateway gRPC address | `http://127.0.0.1:8081` |
+| `CASS_AGENT_SECRET` | Agent: API key with `agent:execute` | Required |
+| `CASS_AGENT_ALLOW_EXEC` | Agent: run `exec` commands and scripts | `false` |
+| `CASS_AGENT_DEPLOY_DIR` | Agent: deploy builds into `<dir>/<build_id>/` | Unset (deploys refused) |
+| `CASS_AGENT_NODE_ID` | Agent: UUID identity | Derived from the hostname |
+| `RUST_LOG` | Log level | `info` |
+
+See [.env.example](CassandraNet/.env.example) for a complete template.
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/version` | GET | Build info |
+| `/metrics` | GET | Prometheus metrics |
+| `/agents` | GET | List connected agents |
+| `/auth/login` | POST | Authenticate user |
+| `/auth/refresh` | POST | Refresh access token |
+| `/auth/me` | GET | Get current user |
+| `/auth/logout` | POST | Clear session |
+| `/agents/{id}/config` | GET, PUT | Agent config (`agent:read` / `agent:write`) |
+| `/agents/{id}/commands` | GET, POST | Command history / queue `restart`, `shutdown`, `exec`, `collect_logs`, `deploy_build` |
+| `/builds` | GET, POST | List builds / upload one as `multipart/form-data` (`build:read` / `build:write`) |
+| `/deployments` | POST | Deploy a build to agents (`build:deploy`) |
+| `/scripts`, `/scripts/{id}/execute` | … | Script library and runs (`script:*`) |
+| `/settings` | GET, PUT | Platform settings (`admin:read` / `admin:write`) |
+| `/docs` | GET | Swagger UI with the full API (requires `docs:read`) |
+
+Commands, script runs and deployments are queued as jobs. Agents pick them up
+on their next heartbeat and report results, which appear in the console.
+
+The gRPC port (HTTP port + 1) serves `AgentControl` (registration, heartbeats,
+job results, build downloads), `UgcService` and `MessagingService`. Every call
+must carry `x-api-key` or `authorization: Bearer …` metadata with the same
+scopes as HTTP (`agent:execute`, `ugc:read`/`ugc:write`,
+`messaging:read`/`messaging:write`).
+
+## Security Notes
+
+- The gateway fails to start without `CASS_JWT_SECRET`; there is no fallback key.
+- Access tokens expire after 15 minutes; refresh tokens are only accepted at `/auth/refresh`.
+- HTTP and gRPC are served in plaintext. Put the gateway behind a TLS-terminating
+  proxy before exposing it beyond a trusted network.
+- `CASS_API_KEYS` is a bootstrap mechanism; with the `db` feature, manage keys
+  through the API (`apikey:manage`) instead.
+- Agents run operator-supplied code only when started with `--allow-exec`, and
+  only deploy builds into an explicit `--deploy-dir`. Enabling `--allow-exec`
+  gives every holder of `agent:write` or `script:execute` code execution on that
+  host.
+- Agents currently share credentials: any `agent:execute` key can act as any
+  agent ID. Issue that scope only to agents you trust.
+
+## Development Guide
+
+### Running Tests
+
+From the `CassandraNet/` directory (these mirror CI):
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+
+# Go peripherals
+cd peripherals && go vet ./... && go test ./...
+
+# Console (lint, type-check, build)
+cd frontend/console && npm ci && npm run lint && npm run build
+```
+
+### Building from Source
+
+```bash
+# Debug build
+cargo build
+
+# Release gateway with PostgreSQL support
+cargo build --release -p cngateway --features db
+
+# C SDK
+cargo build -p cnsdk_c --release
+```
 
 ## Contributing
 
-Feel free to submit a PR at anytime. we embrace open-source, and would love to grow this project with the OSS Community.
+Feel free to submit a PR anytime. We embrace open-source and would love to grow this project with the OSS community.
 
-## Third-Party libraries Used
+CassandraNet follows the [Rust Lang's Code of Conduct](https://www.rust-lang.org/policies/code-of-conduct).
 
-Check [license.html](CassandraNet/license.html) for the Libraries used in the project.
+## Third-Party Libraries
 
-## Running & Testing (Current Snapshot)
+See [license.html](CassandraNet/license.html) for the libraries used in this project.
 
-This section documents how to run what already exists in the repo today. Components are early-stage and APIs will change.
+## Releases
 
-### Prerequisites
-* Rust (stable toolchain) + Cargo
-* Node.js 18+ (for the React console)
-* (Optional) PostgreSQL if you want to enable the `db` feature
-* Set an env var for JWT signing if you want to issue / validate HS256 tokens: `CASS_JWT_SECRET="devsecret"`
+Tagging `vX.Y.Z` (matching the crate versions) runs the release workflow, which
+publishes Linux binaries and the C SDK to a GitHub release and pushes container
+images to GHCR. See [CHANGELOG.md](CHANGELOG.md).
 
-### Workspace Layout (active crates)
-* `core` (`cncore`): config, tracing, optional DB pool & migrations
-* `gateway` (`cngateway`): HTTP API (health, version, metrics, agents), OpenAPI UI, auth stubs, metrics middleware, Prometheus
-* `cnproto`: gRPC/protobuf definitions (AgentControl)
-* `cnagent`: Simple agent that registers & sends heartbeats over gRPC
-* `cnsdk_c`: C ABI stub (builds staticlib/cdylib)
-* `frontend/marketing`: Next.js marketing site (landing page, product overview)
-* `frontend/console`: React + Vite console (operator dashboard)
+## License
 
-### Build Everything
-```
-cargo build
-```
-Add `--features db` to include Postgres integration (see DB section below).
-
-### Run the Gateway
-```
-cargo run -p cngateway
-```
-Environment overrides (all optional) use the `CASS__` prefix (double underscore for nesting):
-```
-set CASS__HTTP__BIND_ADDR=127.0.0.1:8080
-set CASS_JWT_SECRET=devsecret
-cargo run -p cngateway
-```
-Endpoints:
-* `GET /health` – liveness
-* `GET /version` – build metadata (git sha/tag if provided at build time)
-* `GET /metrics` – Prometheus metrics (includes request counters, latency histogram, process metrics)
-* `GET /agents` – current in‑memory agent registry
-* `GET /docs` – Swagger UI (serves OpenAPI from `/api-docs/openapi.json`)
-
-### Generate a JWT (HS256)
-```
-set CASS_JWT_SECRET=devsecret
-cargo run -p cngateway -- gen-token --sub test-user
-```
-Returns a compact JWT valid for 1 hour (no advanced claims yet). Auth on HTTP routes is currently permissive: public system routes bypass auth; other future routes will require either `x-api-key` or `Authorization: Bearer <token>`.
-
-### Enable & Use the Database Feature
-1. Start/PostgreSQL locally and create a database (default URL used if none specified):
-	* Default: `postgres://localhost:5432/cassandra`
-2. Override via env:
-```
-set CASS__DATABASE__URL=postgres://user:pass@localhost:5432/cassandra
-set CASS__DATABASE__MAX_CONNECTIONS=10
-cargo run -p cngateway --features db
-```
-Migrations run automatically on gateway startup (tables: users, orgs, memberships, titles, nodes, node_metrics). Agent register / heartbeat will upsert node rows and insert metrics.
-
-### Run the Agent (gRPC)
-Gateway gRPC listens on HTTP port + 1 (e.g. if HTTP is 8080, gRPC is 8081). Launch agent after gateway:
-```
-set CASS_AGENT_TENANT_ID=<tenant uuid>
-set CASS_AGENT_PROJECT_ID=<project uuid>
-cargo run -p cnagent -- --gateway http://127.0.0.1:8081
-```
-It will RegisterAgent then send periodic Heartbeat messages; the gateway exposes results at `GET /agents` and (if DB enabled) persists metadata.
-
-### Frontend (Marketing & Console)
-
-**Marketing site (Next.js)**
-```
-cd frontend/marketing
-npm install   # first time
-npm run dev
-```
-Runs the landing experience at <http://localhost:3000>. Tailwind powers the styling, and metadata is configured in `src/app/layout.tsx`.
-
-**Operator console (Vite)**
-```
-cd frontend/console
-npm install   # first time
-npm run dev
-```
-Vite (default <http://localhost:5173>) proxies `/api/*` to the gateway (`http://127.0.0.1:8080`). The refreshed UI shows backend health, key agent telemetry, and quick actions.
-
-### Integration Tests
-Run all workspace tests:
-```
-cargo test
-```
-Notable tests:
-* Gateway health route
-* Metrics exposition & custom counters
-* OpenAPI security scheme presence
-* Agent register + heartbeat (spins ephemeral HTTP & gRPC servers then queries `/agents`)
-
-### C SDK Stub
-Build the C ABI crate (produces library artifacts under `target`):
-```
-cargo build -p cnsdk_c --release
-```
-Exports placeholder functions (init, authenticate, send_metric, get_server_session, shutdown). The header is in `cnsdk_c/include/cassandra.h`.
-
-### Prometheus Metrics Snapshot
-Example metric names (see `/metrics`):
-* `gateway_http_requests_total{method,path,status}`
-* `gateway_http_request_duration_seconds{...}`
-* `gateway_http_errors_total{...}`
-* `gateway_build_info` (constant gauge = 1)
-* `process_cpu_percent`, `process_memory_bytes`
-
-### Common Troubleshooting
-* Build fails with missing OpenSSL / TLS: we're using `native-tls` indirectly via sqlx when `db` feature is enabled; ensure system SSL libraries present (on Windows this is usually fine by default).
-* gRPC client cannot connect: verify port (HTTP+1) and that gateway log shows `grpc listening` line.
-* `/agents` empty: run the agent, or ensure heartbeats are being sent (logs / run with `RUST_LOG=info`).
-
-### Next Planned Enhancements (Roadmap Hints)
-* Auth hardening (claims validation, roles, API keys management)
-* Persistent agent registry & richer querying
-* Additional services (orchestration, UGC, messaging) & Go microservices layer
-* Expanded frontend (agent detail, metrics charts)
-* Docker / Compose & CI pipelines
-
-## UGC Upload & Metadata (prototype)
-
-The current codebase now includes the first slice of a UGC pipeline:
-
-* **Domain models** – `core::platform::models` defines `ContentMetadata`, `UploadSession`, and related enums for tracking uploads, access visibility, and project-scoped storage preferences.
-* **Persistence contract** – `core::platform::persistence::ContentStore` abstracts storage providers. The in-memory implementation is wired into `InMemoryPersistence` so tests and early flows can exercise listing and querying metadata without an external database.
-* **Listing support** – a `ContentQuery` struct drives filtered listings by tenant, project, tags, and free-text matching across filenames and metadata attributes.
-* **Pluggable storage settings** – `ProjectStorageSettings` and additions to `TenantSettings` capture the target bucket/prefix configuration that real backends can interpret when wiring S3, Azure Blob, etc.
-
-### Upload session flow (planned wiring)
-1. Client requests an upload; the platform creates an `UploadSession` (status `Pending`) with a signed URL/header set for direct-to-storage uploads.
-2. Client transfers the blob to storage.
-3. Client (or storage webhook) finalises the session via `ContentStore::record_content_metadata`, transitioning the session to `Completed` and recording the blob metadata.
-4. Downstream services can list or fetch UGC using the metadata catalogue while respecting tenant and project boundaries.
-
-Middleware for rate limiting and validation is slated to sit in front of the session creation endpoint; see the "Security hardening" notes for the current plan.
-
-## Observability & Logging Scaffolding
-
-Shared utilities under `cncommon::observability` lay the groundwork for unified telemetry across services:
-
-* `InMemoryMetricsRegistry` – captures counters, gauges, and histograms with label support. Ideal for unit tests or early prototypes before wiring to Prometheus / OpenTelemetry exporters.
-* `LogPipeline` + `LogSink` – fan-out hub for structured log forwarding. An `InMemoryLogSink` is provided for tests; production sinks can forward to OTLP, Loki, or vendor APIs.
-* `LogEvent` carries component identifiers, tenant/project context, and arbitrary JSON metadata so audit trails remain multi-tenant aware.
-
-These utilities are lightweight, but already power unit tests to guarantee metrics and logs are emitted and captured. Future work will expose builders to plug them into the eventual HTTP gateway and background workers.
-
-## Security Hardening Checklist (in progress)
-
-To protect UGC uploads and multi-tenant workloads, the following items are being actively designed:
-
-* **Rate limiting** – per-tenant counters built on the metrics registry will feed sliding-window throttles for upload/session creation APIs.
-* **Tenant isolation** – storage metadata always records both tenant and project IDs; any persistence implementation must enforce these in query filters.
-* **Audit & observability** – every upload and metadata mutation will emit structured `LogEvent`s so downstream SIEM tooling can detect anomalies.
-* **End-to-end tests** – forthcoming integration specs will exercise the happy path (upload + metadata listing) alongside boundary cases (cross-tenant access, oversized objects, expired sessions).
-
-Contributors interested in these areas can start by reading the `ContentStore` trait and the observability helpers before proposing concrete integrations.
-
----
-This doc reflects the in-flight prototype state; expect breaking changes until a tagged pre-release.
+MIT License - see LICENSE file for details.

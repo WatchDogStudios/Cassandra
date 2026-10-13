@@ -1,5 +1,16 @@
 use cnbackend::requests::request::{CnCustomRequest, CnRequest, Method};
 
+// TODO: Add integration tests for UGC and Messaging endpoints.
+// Requires running gateway and reqwest dependency.
+//
+// Tests to add:
+// 1. Create content: POST /ugc/content
+// 2. List content: GET /ugc/content
+// 3. Update content state: PUT /ugc/content/:id/state
+// 4. Publish message: POST /messaging/publish
+// 5. List messages: GET /messaging/messages
+// 6. Ack message: POST /messaging/messages/:id/ack
+
 #[test]
 fn test_requests() {
     let mut headers = std::collections::HashMap::new();

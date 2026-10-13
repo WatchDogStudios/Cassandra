@@ -149,13 +149,13 @@ func (s *Service) handleReview(w http.ResponseWriter, r *http.Request, id string
 // ParseState converts string representations into a State value.
 func ParseState(value string) (State, error) {
 	switch strings.ToLower(value) {
-	case string(StatePending), "pending":
+	case string(StatePending):
 		return StatePending, nil
-	case string(StateApproved), "approved":
+	case string(StateApproved):
 		return StateApproved, nil
-	case string(StateRejected), "rejected":
+	case string(StateRejected):
 		return StateRejected, nil
-	case string(StateArchived), "archived":
+	case string(StateArchived):
 		return StateArchived, nil
 	default:
 		return "", errors.New("unknown state")

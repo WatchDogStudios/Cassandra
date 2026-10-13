@@ -1,13 +1,19 @@
 use crate::platform::error::{PlatformError, PlatformResult};
 use crate::platform::models::*;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+#[cfg(feature = "db")]
+use chrono::DateTime;
+use chrono::Utc;
+#[cfg(feature = "db")]
+use cncommon::auth::Scope;
 use parking_lot::RwLock;
 #[cfg(feature = "db")]
 use sqlx::{postgres::PgRow, Pool, Postgres, QueryBuilder, Row};
 use std::collections::{HashMap, VecDeque};
+#[cfg(feature = "db")]
 use std::str::FromStr;
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub trait TenantStore: Send + Sync {
     fn insert_tenant(&self, tenant: Tenant) -> PlatformResult<()>;
@@ -36,6 +42,21 @@ pub trait ApiKeyStore: Send + Sync {
     fn update_api_key(&self, record: ApiKeyRecord) -> PlatformResult<()>;
 }
 
+/// Async version of ApiKeyStore for database-backed implementations
+#[async_trait]
+pub trait AsyncApiKeyStore: Send + Sync {
+    async fn insert_api_key(&self, record: ApiKeyRecord) -> PlatformResult<()>;
+    async fn get_api_key(&self, id: ApiKeyId) -> PlatformResult<Option<ApiKeyRecord>>;
+    async fn get_api_key_by_prefix(&self, prefix: &str) -> PlatformResult<Option<ApiKeyRecord>>;
+    async fn list_api_keys(&self, tenant_id: TenantId) -> PlatformResult<Vec<ApiKeyRecord>>;
+    /// List all non-revoked, non-deleted API keys across tenants.
+    /// Intended for services that maintain an in-process auth cache.
+    async fn list_all_active_api_keys(&self) -> PlatformResult<Vec<ApiKeyRecord>>;
+    async fn update_api_key(&self, record: ApiKeyRecord) -> PlatformResult<()>;
+    async fn delete_api_key(&self, id: ApiKeyId) -> PlatformResult<()>;
+    async fn update_last_used(&self, id: ApiKeyId) -> PlatformResult<()>;
+}
+
 pub trait TaskStore: Send + Sync {
     fn enqueue_task(&self, task: Task) -> PlatformResult<()>;
     fn peek_next_task(&self, tenant_id: TenantId) -> PlatformResult<Option<Task>>;
@@ -48,6 +69,55 @@ pub trait WorkflowStore: Send + Sync {
     fn insert_workflow(&self, workflow: Workflow) -> PlatformResult<()>;
     fn get_workflow(&self, id: WorkflowId) -> PlatformResult<Option<Workflow>>;
     fn list_workflows(&self, tenant_id: TenantId) -> PlatformResult<Vec<Workflow>>;
+}
+
+/// Async version of TaskStore for database-backed implementations
+#[async_trait]
+pub trait AsyncTaskStore: Send + Sync {
+    async fn enqueue_task(&self, task: Task) -> PlatformResult<Task>;
+    async fn get_task(&self, id: TaskId) -> PlatformResult<Option<Task>>;
+    async fn update_task(&self, task: Task) -> PlatformResult<Task>;
+    async fn list_pending_tasks(
+        &self,
+        tenant_id: TenantId,
+        limit: u32,
+    ) -> PlatformResult<Vec<Task>>;
+    /// Atomically lease the next available task for processing
+    async fn lease_next_task(
+        &self,
+        tenant_id: TenantId,
+        worker_id: Uuid,
+        lease_seconds: u32,
+    ) -> PlatformResult<Option<TaskLease>>;
+    /// Release a leased task (on success or failure)
+    async fn complete_task(
+        &self,
+        id: TaskId,
+        result: Option<serde_json::Value>,
+        error: Option<String>,
+    ) -> PlatformResult<()>;
+}
+
+/// Async version of WorkflowStore for database-backed implementations
+#[async_trait]
+pub trait AsyncWorkflowStore: Send + Sync {
+    async fn create_workflow(&self, workflow: Workflow) -> PlatformResult<Workflow>;
+    async fn get_workflow(&self, id: WorkflowId) -> PlatformResult<Option<Workflow>>;
+    async fn list_workflows(
+        &self,
+        tenant_id: TenantId,
+        active_only: bool,
+    ) -> PlatformResult<Vec<Workflow>>;
+    async fn update_workflow(&self, workflow: Workflow) -> PlatformResult<Workflow>;
+    async fn delete_workflow(&self, id: WorkflowId) -> PlatformResult<()>;
+    /// Start a new workflow run
+    async fn start_run(
+        &self,
+        workflow_id: WorkflowId,
+        context: serde_json::Value,
+    ) -> PlatformResult<WorkflowRun>;
+    async fn get_run(&self, run_id: Uuid) -> PlatformResult<Option<WorkflowRun>>;
+    async fn update_run(&self, run: WorkflowRun) -> PlatformResult<WorkflowRun>;
 }
 
 #[async_trait]
@@ -95,6 +165,46 @@ pub trait MessagingStore: Send + Sync {
     async fn ack_message(&self, topic: &str, id: MessageId) -> PlatformResult<()>;
 }
 
+#[async_trait]
+pub trait UserStore: Send + Sync {
+    async fn create_user(&self, user: User) -> PlatformResult<User>;
+    async fn get_user_by_id(&self, id: UserId) -> PlatformResult<Option<User>>;
+    async fn get_user_by_email(&self, email: &str) -> PlatformResult<Option<User>>;
+    async fn list_users(&self, tenant_id: Option<TenantId>) -> PlatformResult<Vec<User>>;
+    async fn update_user(&self, user: User) -> PlatformResult<User>;
+    async fn update_password(&self, id: UserId, password_hash: String) -> PlatformResult<()>;
+}
+
+/// Async version of TenantStore for database-backed implementations
+#[async_trait]
+pub trait AsyncTenantStore: Send + Sync {
+    async fn create_tenant(&self, tenant: Tenant) -> PlatformResult<Tenant>;
+    async fn get_tenant(&self, id: TenantId) -> PlatformResult<Option<Tenant>>;
+    async fn get_tenant_by_slug(&self, slug: &str) -> PlatformResult<Option<Tenant>>;
+    async fn list_tenants(&self, active_only: bool) -> PlatformResult<Vec<Tenant>>;
+    async fn update_tenant(&self, tenant: Tenant) -> PlatformResult<Tenant>;
+    async fn delete_tenant(&self, id: TenantId) -> PlatformResult<()>;
+}
+
+/// Async version of ProjectStore for database-backed implementations
+#[async_trait]
+pub trait AsyncProjectStore: Send + Sync {
+    async fn create_project(&self, project: Project) -> PlatformResult<Project>;
+    async fn get_project(&self, id: ProjectId) -> PlatformResult<Option<Project>>;
+    async fn get_project_by_slug(
+        &self,
+        tenant_id: TenantId,
+        slug: &str,
+    ) -> PlatformResult<Option<Project>>;
+    async fn list_projects(
+        &self,
+        tenant_id: TenantId,
+        active_only: bool,
+    ) -> PlatformResult<Vec<Project>>;
+    async fn update_project(&self, project: Project) -> PlatformResult<Project>;
+    async fn delete_project(&self, id: ProjectId) -> PlatformResult<()>;
+}
+
 #[derive(Default)]
 struct PlatformState {
     tenants: HashMap<TenantId, Tenant>,
@@ -111,6 +221,8 @@ struct PlatformState {
     moderation_content: HashMap<ContentId, ModeratedContent>,
     messages: HashMap<MessageId, MessageRecord>,
     messages_by_topic: HashMap<String, VecDeque<MessageId>>,
+    users: HashMap<UserId, User>,
+    users_by_email: HashMap<String, UserId>,
 }
 
 #[derive(Clone, Default)]
@@ -254,7 +366,7 @@ impl ApiKeyStore for InMemoryPersistence {
             .filter(|k| k.tenant_id == tenant_id)
             .cloned()
             .collect();
-        keys.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        keys.sort_by_key(|a| a.created_at);
         Ok(keys)
     }
 
@@ -331,7 +443,7 @@ impl TaskStore for InMemoryPersistence {
             .filter(|task| task.tenant_id == tenant_id && task.status == TaskStatus::Pending)
             .cloned()
             .collect();
-        tasks.sort_by(|a, b| a.scheduled_at.cmp(&b.scheduled_at));
+        tasks.sort_by_key(|a| a.scheduled_at);
         Ok(tasks)
     }
 }
@@ -788,6 +900,1042 @@ impl PostgresAgentStore {
 
         let rows: Vec<AgentSummaryRow> = builder.build_query_as().fetch_all(&self.pool).await?;
         rows.into_iter().map(|row| row.into_record()).collect()
+    }
+}
+
+// ============================================================================
+// PostgresApiKeyStore - Database-backed API key management
+// ============================================================================
+
+#[cfg(feature = "db")]
+pub struct PostgresApiKeyStore {
+    pool: Pool<Postgres>,
+}
+
+#[cfg(feature = "db")]
+impl PostgresApiKeyStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+
+    fn scopes_to_strings(scopes: &[cncommon::auth::Scope]) -> Vec<String> {
+        scopes.iter().map(|s| s.as_str().to_string()).collect()
+    }
+
+    fn strings_to_scopes(strings: Vec<String>) -> Vec<cncommon::auth::Scope> {
+        strings
+            .into_iter()
+            .map(|s| cncommon::auth::Scope::from_name(&s))
+            .collect()
+    }
+}
+
+#[cfg(feature = "db")]
+#[async_trait]
+impl AsyncApiKeyStore for PostgresApiKeyStore {
+    async fn insert_api_key(&self, record: ApiKeyRecord) -> PlatformResult<()> {
+        let scopes = Self::scopes_to_strings(&record.scopes);
+        sqlx::query(
+            "INSERT INTO api_keys (
+                id, tenant_id, label, scopes, token_prefix, token_hash,
+                created_at, last_used_at, revoked, deleted_at, rotated_from, rotated_to
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        )
+        .bind(record.id)
+        .bind(record.tenant_id)
+        .bind(&record.label)
+        .bind(&scopes)
+        .bind(&record.token_prefix)
+        .bind(&record.token_hash)
+        .bind(record.created_at)
+        .bind(record.last_used_at)
+        .bind(record.revoked)
+        .bind(record.deleted_at)
+        .bind(record.rotated_from)
+        .bind(record.rotated_to)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_api_key(&self, id: ApiKeyId) -> PlatformResult<Option<ApiKeyRecord>> {
+        let row = sqlx::query_as::<_, ApiKeyRow>(
+            "SELECT id, tenant_id, label, scopes, token_prefix, token_hash,
+                    created_at, last_used_at, revoked, deleted_at, rotated_from, rotated_to
+             FROM api_keys WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_record()))
+    }
+
+    async fn get_api_key_by_prefix(&self, prefix: &str) -> PlatformResult<Option<ApiKeyRecord>> {
+        let row = sqlx::query_as::<_, ApiKeyRow>(
+            "SELECT id, tenant_id, label, scopes, token_prefix, token_hash,
+                    created_at, last_used_at, revoked, deleted_at, rotated_from, rotated_to
+             FROM api_keys WHERE token_prefix = $1 AND deleted_at IS NULL AND revoked = FALSE",
+        )
+        .bind(prefix)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.into_record()))
+    }
+
+    async fn list_api_keys(&self, tenant_id: TenantId) -> PlatformResult<Vec<ApiKeyRecord>> {
+        let rows = sqlx::query_as::<_, ApiKeyRow>(
+            "SELECT id, tenant_id, label, scopes, token_prefix, token_hash,
+                    created_at, last_used_at, revoked, deleted_at, rotated_from, rotated_to
+             FROM api_keys WHERE tenant_id = $1 AND deleted_at IS NULL
+             ORDER BY created_at DESC",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_record()).collect())
+    }
+
+    async fn list_all_active_api_keys(&self) -> PlatformResult<Vec<ApiKeyRecord>> {
+        let rows = sqlx::query_as::<_, ApiKeyRow>(
+            "SELECT id, tenant_id, label, scopes, token_prefix, token_hash,
+                    created_at, last_used_at, revoked, deleted_at, rotated_from, rotated_to
+             FROM api_keys
+             WHERE deleted_at IS NULL AND revoked = FALSE",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|r| r.into_record()).collect())
+    }
+
+    async fn update_api_key(&self, record: ApiKeyRecord) -> PlatformResult<()> {
+        let scopes = Self::scopes_to_strings(&record.scopes);
+        let result = sqlx::query(
+            "UPDATE api_keys SET
+                label = $2, scopes = $3, revoked = $4, deleted_at = $5,
+                rotated_from = $6, rotated_to = $7
+             WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(record.id)
+        .bind(&record.label)
+        .bind(&scopes)
+        .bind(record.revoked)
+        .bind(record.deleted_at)
+        .bind(record.rotated_from)
+        .bind(record.rotated_to)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("api_key"));
+        }
+        Ok(())
+    }
+
+    async fn delete_api_key(&self, id: ApiKeyId) -> PlatformResult<()> {
+        let result = sqlx::query(
+            "UPDATE api_keys SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("api_key"));
+        }
+        Ok(())
+    }
+
+    async fn update_last_used(&self, id: ApiKeyId) -> PlatformResult<()> {
+        sqlx::query("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "db")]
+#[derive(sqlx::FromRow)]
+struct ApiKeyRow {
+    id: Uuid,
+    tenant_id: Uuid,
+    label: String,
+    scopes: Vec<String>,
+    token_prefix: String,
+    token_hash: String,
+    created_at: DateTime<Utc>,
+    last_used_at: Option<DateTime<Utc>>,
+    revoked: bool,
+    deleted_at: Option<DateTime<Utc>>,
+    rotated_from: Option<Uuid>,
+    rotated_to: Option<Uuid>,
+}
+
+#[cfg(feature = "db")]
+impl ApiKeyRow {
+    fn into_record(self) -> ApiKeyRecord {
+        ApiKeyRecord {
+            id: self.id,
+            tenant_id: self.tenant_id,
+            label: self.label,
+            scopes: PostgresApiKeyStore::strings_to_scopes(self.scopes),
+            token_prefix: self.token_prefix,
+            token_hash: self.token_hash,
+            created_at: self.created_at,
+            last_used_at: self.last_used_at,
+            revoked: self.revoked,
+            deleted_at: self.deleted_at,
+            rotated_from: self.rotated_from,
+            rotated_to: self.rotated_to,
+        }
+    }
+}
+
+// ==== PostgresUserStore ====
+
+#[cfg(feature = "db")]
+pub struct PostgresUserStore {
+    pool: Pool<Postgres>,
+}
+
+#[cfg(feature = "db")]
+impl PostgresUserStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+}
+
+#[cfg(feature = "db")]
+#[async_trait]
+impl UserStore for PostgresUserStore {
+    async fn create_user(&self, user: User) -> PlatformResult<User> {
+        let scopes: Vec<String> = user.scopes.iter().map(|s| s.as_str().to_string()).collect();
+        sqlx::query(
+            r#"INSERT INTO users (id, email, password_hash, display_name, tenant_id, scopes, created_at, updated_at, last_login_at, is_active)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"#,
+        )
+        .bind(user.id)
+        .bind(&user.email)
+        .bind(&user.password_hash)
+        .bind(&user.display_name)
+        .bind(user.tenant_id)
+        .bind(&scopes)
+        .bind(user.created_at)
+        .bind(user.updated_at)
+        .bind(user.last_login_at)
+        .bind(user.is_active)
+        .execute(&self.pool)
+        .await?;
+        Ok(user)
+    }
+
+    async fn get_user_by_id(&self, id: UserId) -> PlatformResult<Option<User>> {
+        let row = sqlx::query(
+            "SELECT id, email, password_hash, display_name, tenant_id, scopes, created_at, updated_at, last_login_at, is_active FROM users WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_user_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_user_by_email(&self, email: &str) -> PlatformResult<Option<User>> {
+        let row = sqlx::query(
+            "SELECT id, email, password_hash, display_name, tenant_id, scopes, created_at, updated_at, last_login_at, is_active FROM users WHERE email = $1",
+        )
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_user_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_users(&self, tenant_id: Option<TenantId>) -> PlatformResult<Vec<User>> {
+        let rows = if let Some(tenant_id) = tenant_id {
+            sqlx::query(
+                "SELECT id, email, password_hash, display_name, tenant_id, scopes, created_at, updated_at, last_login_at, is_active FROM users WHERE tenant_id = $1 ORDER BY created_at DESC",
+            )
+            .bind(tenant_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, email, password_hash, display_name, tenant_id, scopes, created_at, updated_at, last_login_at, is_active FROM users ORDER BY created_at DESC",
+            )
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        rows.into_iter().map(Self::map_user_row).collect()
+    }
+
+    async fn update_user(&self, user: User) -> PlatformResult<User> {
+        let scopes: Vec<String> = user.scopes.iter().map(|s| s.as_str().to_string()).collect();
+        let result = sqlx::query(
+            r#"UPDATE users SET email = $2, display_name = $3, tenant_id = $4, scopes = $5, updated_at = $6, last_login_at = $7, is_active = $8
+               WHERE id = $1"#,
+        )
+        .bind(user.id)
+        .bind(&user.email)
+        .bind(&user.display_name)
+        .bind(user.tenant_id)
+        .bind(&scopes)
+        .bind(user.updated_at)
+        .bind(user.last_login_at)
+        .bind(user.is_active)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("user"));
+        }
+        Ok(user)
+    }
+
+    async fn update_password(&self, id: UserId, password_hash: String) -> PlatformResult<()> {
+        let result =
+            sqlx::query("UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1")
+                .bind(id)
+                .bind(&password_hash)
+                .execute(&self.pool)
+                .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("user"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "db")]
+impl PostgresUserStore {
+    fn map_user_row(row: PgRow) -> PlatformResult<User> {
+        use sqlx::Row;
+        let scopes: Vec<String> = row.try_get("scopes")?;
+        let scopes: Vec<Scope> = scopes.iter().map(|s| Scope::from_name(s)).collect();
+        Ok(User {
+            id: row.try_get("id")?,
+            email: row.try_get("email")?,
+            password_hash: row.try_get("password_hash")?,
+            display_name: row.try_get("display_name")?,
+            tenant_id: row.try_get("tenant_id")?,
+            scopes,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            last_login_at: row.try_get("last_login_at")?,
+            is_active: row.try_get("is_active")?,
+        })
+    }
+}
+
+// ==== PostgresTenantStore ====
+
+#[cfg(feature = "db")]
+pub struct PostgresTenantStore {
+    pool: Pool<Postgres>,
+}
+
+#[cfg(feature = "db")]
+impl PostgresTenantStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+}
+
+#[cfg(feature = "db")]
+#[async_trait]
+impl AsyncTenantStore for PostgresTenantStore {
+    async fn create_tenant(&self, tenant: Tenant) -> PlatformResult<Tenant> {
+        let settings = serde_json::to_value(&tenant.settings)
+            .map_err(|_| PlatformError::InvalidInput("invalid settings"))?;
+        sqlx::query(
+            r#"INSERT INTO tenants (id, name, slug, plan, description, settings, quota_agents, quota_storage_bytes, is_active, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#,
+        )
+        .bind(tenant.id)
+        .bind(&tenant.name)
+        .bind(&tenant.slug)
+        .bind(&tenant.plan)
+        .bind(&tenant.description)
+        .bind(&settings)
+        .bind(tenant.quota_agents)
+        .bind(tenant.quota_storage_bytes)
+        .bind(tenant.is_active)
+        .bind(tenant.created_at)
+        .bind(tenant.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(tenant)
+    }
+
+    async fn get_tenant(&self, id: TenantId) -> PlatformResult<Option<Tenant>> {
+        let row = sqlx::query(
+            "SELECT id, name, slug, plan, description, settings, quota_agents, quota_storage_bytes, is_active, created_at, updated_at FROM tenants WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_tenant_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_tenant_by_slug(&self, slug: &str) -> PlatformResult<Option<Tenant>> {
+        let row = sqlx::query(
+            "SELECT id, name, slug, plan, description, settings, quota_agents, quota_storage_bytes, is_active, created_at, updated_at FROM tenants WHERE slug = $1",
+        )
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_tenant_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_tenants(&self, active_only: bool) -> PlatformResult<Vec<Tenant>> {
+        let query = if active_only {
+            "SELECT id, name, slug, plan, description, settings, quota_agents, quota_storage_bytes, is_active, created_at, updated_at FROM tenants WHERE is_active = true ORDER BY created_at"
+        } else {
+            "SELECT id, name, slug, plan, description, settings, quota_agents, quota_storage_bytes, is_active, created_at, updated_at FROM tenants ORDER BY created_at"
+        };
+        let rows = sqlx::query(query).fetch_all(&self.pool).await?;
+        rows.into_iter().map(Self::map_tenant_row).collect()
+    }
+
+    async fn update_tenant(&self, tenant: Tenant) -> PlatformResult<Tenant> {
+        let settings = serde_json::to_value(&tenant.settings)
+            .map_err(|_| PlatformError::InvalidInput("invalid settings"))?;
+        let result = sqlx::query(
+            r#"UPDATE tenants SET name = $2, slug = $3, plan = $4, description = $5, settings = $6, quota_agents = $7, quota_storage_bytes = $8, is_active = $9, updated_at = $10
+               WHERE id = $1"#,
+        )
+        .bind(tenant.id)
+        .bind(&tenant.name)
+        .bind(&tenant.slug)
+        .bind(&tenant.plan)
+        .bind(&tenant.description)
+        .bind(&settings)
+        .bind(tenant.quota_agents)
+        .bind(tenant.quota_storage_bytes)
+        .bind(tenant.is_active)
+        .bind(tenant.updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("tenant"));
+        }
+        Ok(tenant)
+    }
+
+    async fn delete_tenant(&self, id: TenantId) -> PlatformResult<()> {
+        let result = sqlx::query("DELETE FROM tenants WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("tenant"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "db")]
+impl PostgresTenantStore {
+    fn map_tenant_row(row: PgRow) -> PlatformResult<Tenant> {
+        use sqlx::Row;
+        let settings: serde_json::Value = row.try_get("settings")?;
+        let settings: TenantSettings = serde_json::from_value(settings).unwrap_or_default();
+        Ok(Tenant {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            slug: row.try_get("slug")?,
+            plan: row.try_get("plan")?,
+            description: row.try_get("description")?,
+            settings,
+            quota_agents: row.try_get("quota_agents")?,
+            quota_storage_bytes: row.try_get("quota_storage_bytes")?,
+            is_active: row.try_get("is_active")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+
+// ==== PostgresProjectStore ====
+
+#[cfg(feature = "db")]
+pub struct PostgresProjectStore {
+    pool: Pool<Postgres>,
+}
+
+#[cfg(feature = "db")]
+impl PostgresProjectStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+}
+
+#[cfg(feature = "db")]
+#[async_trait]
+impl AsyncProjectStore for PostgresProjectStore {
+    async fn create_project(&self, project: Project) -> PlatformResult<Project> {
+        sqlx::query(
+            r#"INSERT INTO projects (id, tenant_id, name, slug, description, settings, is_active, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
+        )
+        .bind(project.id)
+        .bind(project.tenant_id)
+        .bind(&project.name)
+        .bind(&project.slug)
+        .bind(&project.description)
+        .bind(&project.settings)
+        .bind(project.is_active)
+        .bind(project.created_at)
+        .bind(project.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(project)
+    }
+
+    async fn get_project(&self, id: ProjectId) -> PlatformResult<Option<Project>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, name, slug, description, settings, is_active, created_at, updated_at FROM projects WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_project_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_project_by_slug(
+        &self,
+        tenant_id: TenantId,
+        slug: &str,
+    ) -> PlatformResult<Option<Project>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, name, slug, description, settings, is_active, created_at, updated_at FROM projects WHERE tenant_id = $1 AND slug = $2",
+        )
+        .bind(tenant_id)
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_project_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_projects(
+        &self,
+        tenant_id: TenantId,
+        active_only: bool,
+    ) -> PlatformResult<Vec<Project>> {
+        let query = if active_only {
+            "SELECT id, tenant_id, name, slug, description, settings, is_active, created_at, updated_at FROM projects WHERE tenant_id = $1 AND is_active = true ORDER BY created_at"
+        } else {
+            "SELECT id, tenant_id, name, slug, description, settings, is_active, created_at, updated_at FROM projects WHERE tenant_id = $1 ORDER BY created_at"
+        };
+        let rows = sqlx::query(query)
+            .bind(tenant_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(Self::map_project_row).collect()
+    }
+
+    async fn update_project(&self, project: Project) -> PlatformResult<Project> {
+        let result = sqlx::query(
+            r#"UPDATE projects SET name = $2, slug = $3, description = $4, settings = $5, is_active = $6, updated_at = $7
+               WHERE id = $1"#,
+        )
+        .bind(project.id)
+        .bind(&project.name)
+        .bind(&project.slug)
+        .bind(&project.description)
+        .bind(&project.settings)
+        .bind(project.is_active)
+        .bind(project.updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("project"));
+        }
+        Ok(project)
+    }
+
+    async fn delete_project(&self, id: ProjectId) -> PlatformResult<()> {
+        let result = sqlx::query("DELETE FROM projects WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("project"));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "db")]
+impl PostgresProjectStore {
+    fn map_project_row(row: PgRow) -> PlatformResult<Project> {
+        use sqlx::Row;
+        Ok(Project {
+            id: row.try_get("id")?,
+            tenant_id: row.try_get("tenant_id")?,
+            name: row.try_get("name")?,
+            slug: row.try_get("slug")?,
+            description: row.try_get("description")?,
+            settings: row.try_get("settings")?,
+            is_active: row.try_get("is_active")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+
+// ==== PostgresTaskStore ====
+
+#[cfg(feature = "db")]
+pub struct PostgresTaskStore {
+    pool: Pool<Postgres>,
+}
+
+#[cfg(feature = "db")]
+impl PostgresTaskStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+
+    fn map_task_row(row: PgRow) -> PlatformResult<Task> {
+        use sqlx::Row;
+        let status_str: String = row.try_get("status")?;
+        let status = match status_str.as_str() {
+            "pending" => TaskStatus::Pending,
+            "in_progress" => TaskStatus::InProgress,
+            "completed" => TaskStatus::Completed,
+            "failed" => TaskStatus::Failed,
+            _ => TaskStatus::Pending,
+        };
+        let timeouts: Option<serde_json::Value> = row.try_get("timeouts")?;
+        let timeouts = timeouts.and_then(|v| serde_json::from_value(v).ok());
+        Ok(Task {
+            id: row.try_get("id")?,
+            tenant_id: row.try_get("tenant_id")?,
+            kind: row.try_get("kind")?,
+            payload: row.try_get("payload")?,
+            status,
+            attempts: row.try_get::<i32, _>("attempts")? as u32,
+            scheduled_at: row.try_get("scheduled_at")?,
+            started_at: row.try_get("started_at")?,
+            completed_at: row.try_get("completed_at")?,
+            last_error: row.try_get("last_error")?,
+            result: row.try_get("result")?,
+            timeouts,
+        })
+    }
+}
+
+#[cfg(feature = "db")]
+#[async_trait]
+impl AsyncTaskStore for PostgresTaskStore {
+    async fn enqueue_task(&self, task: Task) -> PlatformResult<Task> {
+        let status = match task.status {
+            TaskStatus::Pending => "pending",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Completed => "completed",
+            TaskStatus::Failed => "failed",
+        };
+        let timeouts = task
+            .timeouts
+            .as_ref()
+            .and_then(|t| serde_json::to_value(t).ok());
+        sqlx::query(
+            r#"INSERT INTO tasks (id, tenant_id, kind, payload, status, attempts, scheduled_at, timeouts)
+               VALUES ($1, $2, $3, $4, $5::task_status, $6, $7, $8)"#,
+        )
+        .bind(task.id)
+        .bind(task.tenant_id)
+        .bind(&task.kind)
+        .bind(&task.payload)
+        .bind(status)
+        .bind(task.attempts as i32)
+        .bind(task.scheduled_at)
+        .bind(&timeouts)
+        .execute(&self.pool)
+        .await?;
+        Ok(task)
+    }
+
+    async fn get_task(&self, id: TaskId) -> PlatformResult<Option<Task>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, kind, payload, status::text, attempts, scheduled_at, started_at, completed_at, last_error, result, timeouts FROM tasks WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_task_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn update_task(&self, task: Task) -> PlatformResult<Task> {
+        let status = match task.status {
+            TaskStatus::Pending => "pending",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Completed => "completed",
+            TaskStatus::Failed => "failed",
+        };
+        let timeouts = task
+            .timeouts
+            .as_ref()
+            .and_then(|t| serde_json::to_value(t).ok());
+        let result = sqlx::query(
+            r#"UPDATE tasks SET status = $2::task_status, attempts = $3, started_at = $4, completed_at = $5, last_error = $6, result = $7, timeouts = $8, updated_at = NOW()
+               WHERE id = $1"#,
+        )
+        .bind(task.id)
+        .bind(status)
+        .bind(task.attempts as i32)
+        .bind(task.started_at)
+        .bind(task.completed_at)
+        .bind(&task.last_error)
+        .bind(&task.result)
+        .bind(&timeouts)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("task"));
+        }
+        Ok(task)
+    }
+
+    async fn list_pending_tasks(
+        &self,
+        tenant_id: TenantId,
+        limit: u32,
+    ) -> PlatformResult<Vec<Task>> {
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, kind, payload, status::text, attempts, scheduled_at, started_at, completed_at, last_error, result, timeouts 
+             FROM tasks WHERE tenant_id = $1 AND status = 'pending' AND scheduled_at <= NOW() ORDER BY scheduled_at LIMIT $2",
+        )
+        .bind(tenant_id)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Self::map_task_row).collect()
+    }
+
+    async fn lease_next_task(
+        &self,
+        tenant_id: TenantId,
+        worker_id: Uuid,
+        lease_seconds: u32,
+    ) -> PlatformResult<Option<TaskLease>> {
+        // Use FOR UPDATE SKIP LOCKED for concurrent-safe task claiming
+        let row = sqlx::query(
+            r#"UPDATE tasks SET 
+                status = 'in_progress'::task_status,
+                leased_by = $2,
+                lease_expires_at = NOW() + ($3 || ' seconds')::interval,
+                lease_version = lease_version + 1,
+                started_at = COALESCE(started_at, NOW()),
+                attempts = attempts + 1,
+                updated_at = NOW()
+               WHERE id = (
+                   SELECT id FROM tasks 
+                   WHERE tenant_id = $1 AND status = 'pending' AND scheduled_at <= NOW()
+                   ORDER BY scheduled_at
+                   FOR UPDATE SKIP LOCKED
+                   LIMIT 1
+               )
+               RETURNING id, tenant_id, kind, payload, 'in_progress' as status, attempts, scheduled_at, started_at, completed_at, last_error, result, timeouts, lease_version"#,
+        )
+        .bind(tenant_id)
+        .bind(worker_id)
+        .bind(lease_seconds.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                use sqlx::Row;
+                // Extract lease_version first before consuming row
+                let lease_version: i64 = row.try_get("lease_version")?;
+                let task = Self::map_task_row(row)?;
+                Ok(Some(TaskLease {
+                    task,
+                    worker_id,
+                    leased_at: Utc::now(),
+                    lease_expires_at: Utc::now() + chrono::Duration::seconds(lease_seconds as i64),
+                    lease_version: lease_version as u64,
+                    lease_token: Uuid::new_v4(),
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn complete_task(
+        &self,
+        id: TaskId,
+        result: Option<serde_json::Value>,
+        error: Option<String>,
+    ) -> PlatformResult<()> {
+        let status = if error.is_some() {
+            "failed"
+        } else {
+            "completed"
+        };
+        let sql_result = sqlx::query(
+            r#"UPDATE tasks SET status = $2::task_status, completed_at = NOW(), result = $3, last_error = $4, leased_by = NULL, lease_expires_at = NULL, updated_at = NOW()
+               WHERE id = $1"#,
+        )
+        .bind(id)
+        .bind(status)
+        .bind(&result)
+        .bind(&error)
+        .execute(&self.pool)
+        .await?;
+
+        if sql_result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("task"));
+        }
+        Ok(())
+    }
+}
+
+// ==== PostgresWorkflowStore ====
+
+#[cfg(feature = "db")]
+pub struct PostgresWorkflowStore {
+    pool: Pool<Postgres>,
+}
+
+#[cfg(feature = "db")]
+impl PostgresWorkflowStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+
+    fn map_workflow_row(row: PgRow) -> PlatformResult<Workflow> {
+        use sqlx::Row;
+        let steps_json: serde_json::Value = row.try_get("steps")?;
+        let steps: Vec<WorkflowStep> = serde_json::from_value(steps_json).unwrap_or_default();
+        Ok(Workflow {
+            id: row.try_get("id")?,
+            tenant_id: row.try_get("tenant_id")?,
+            name: row.try_get("name")?,
+            steps,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+
+    fn map_run_row(row: PgRow) -> PlatformResult<WorkflowRun> {
+        use sqlx::Row;
+        let status_str: String = row.try_get("status")?;
+        let status = match status_str.as_str() {
+            "pending" => WorkflowRunStatus::Pending,
+            "running" => WorkflowRunStatus::Running,
+            "completed" => WorkflowRunStatus::Completed,
+            "failed" => WorkflowRunStatus::Failed,
+            "cancelled" => WorkflowRunStatus::Cancelled,
+            _ => WorkflowRunStatus::Pending,
+        };
+        Ok(WorkflowRun {
+            id: row.try_get("id")?,
+            tenant_id: row.try_get("tenant_id")?,
+            workflow_id: row.try_get("workflow_id")?,
+            status,
+            current_step: row.try_get("current_step")?,
+            context: row.try_get("context")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            started_at: row.try_get("started_at")?,
+            completed_at: row.try_get("completed_at")?,
+        })
+    }
+}
+
+#[cfg(feature = "db")]
+#[async_trait]
+impl AsyncWorkflowStore for PostgresWorkflowStore {
+    async fn create_workflow(&self, workflow: Workflow) -> PlatformResult<Workflow> {
+        let steps = serde_json::to_value(&workflow.steps)
+            .map_err(|_| PlatformError::InvalidInput("invalid steps"))?;
+        sqlx::query(
+            r#"INSERT INTO workflows (id, tenant_id, name, steps, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $5)"#,
+        )
+        .bind(workflow.id)
+        .bind(workflow.tenant_id)
+        .bind(&workflow.name)
+        .bind(&steps)
+        .bind(workflow.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(workflow)
+    }
+
+    async fn get_workflow(&self, id: WorkflowId) -> PlatformResult<Option<Workflow>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, name, steps, created_at FROM workflows WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_workflow_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_workflows(
+        &self,
+        tenant_id: TenantId,
+        active_only: bool,
+    ) -> PlatformResult<Vec<Workflow>> {
+        let query = if active_only {
+            "SELECT id, tenant_id, name, steps, created_at FROM workflows WHERE tenant_id = $1 AND is_active = true ORDER BY created_at"
+        } else {
+            "SELECT id, tenant_id, name, steps, created_at FROM workflows WHERE tenant_id = $1 ORDER BY created_at"
+        };
+        let rows = sqlx::query(query)
+            .bind(tenant_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(Self::map_workflow_row).collect()
+    }
+
+    async fn update_workflow(&self, workflow: Workflow) -> PlatformResult<Workflow> {
+        let steps = serde_json::to_value(&workflow.steps)
+            .map_err(|_| PlatformError::InvalidInput("invalid steps"))?;
+        let result = sqlx::query(
+            r#"UPDATE workflows SET name = $2, steps = $3, updated_at = NOW() WHERE id = $1"#,
+        )
+        .bind(workflow.id)
+        .bind(&workflow.name)
+        .bind(&steps)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("workflow"));
+        }
+        Ok(workflow)
+    }
+
+    async fn delete_workflow(&self, id: WorkflowId) -> PlatformResult<()> {
+        let result = sqlx::query("DELETE FROM workflows WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("workflow"));
+        }
+        Ok(())
+    }
+
+    async fn start_run(
+        &self,
+        workflow_id: WorkflowId,
+        context: serde_json::Value,
+    ) -> PlatformResult<WorkflowRun> {
+        // Get the workflow to find tenant_id
+        let workflow = self
+            .get_workflow(workflow_id)
+            .await?
+            .ok_or(PlatformError::NotFound("workflow"))?;
+
+        let now = Utc::now();
+        let run = WorkflowRun {
+            id: Uuid::new_v4(),
+            tenant_id: workflow.tenant_id,
+            workflow_id,
+            status: WorkflowRunStatus::Running,
+            current_step: workflow.steps.first().map(|s| s.id),
+            context,
+            created_at: now,
+            updated_at: now,
+            started_at: Some(now),
+            completed_at: None,
+        };
+
+        sqlx::query(
+            r#"INSERT INTO workflow_runs (id, tenant_id, workflow_id, status, current_step, context, created_at, updated_at, started_at)
+               VALUES ($1, $2, $3, 'running'::workflow_run_status, $4, $5, $6, $6, $6)"#,
+        )
+        .bind(run.id)
+        .bind(run.tenant_id)
+        .bind(run.workflow_id)
+        .bind(run.current_step)
+        .bind(&run.context)
+        .bind(run.created_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(run)
+    }
+
+    async fn get_run(&self, run_id: Uuid) -> PlatformResult<Option<WorkflowRun>> {
+        let row = sqlx::query(
+            "SELECT id, tenant_id, workflow_id, status::text, current_step, context, created_at, updated_at, started_at, completed_at FROM workflow_runs WHERE id = $1",
+        )
+        .bind(run_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Self::map_run_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn update_run(&self, run: WorkflowRun) -> PlatformResult<WorkflowRun> {
+        let status = match run.status {
+            WorkflowRunStatus::Pending => "pending",
+            WorkflowRunStatus::Running => "running",
+            WorkflowRunStatus::Completed => "completed",
+            WorkflowRunStatus::Failed => "failed",
+            WorkflowRunStatus::Cancelled => "cancelled",
+        };
+        let result = sqlx::query(
+            r#"UPDATE workflow_runs SET status = $2::workflow_run_status, current_step = $3, context = $4, updated_at = NOW(), completed_at = $5
+               WHERE id = $1"#,
+        )
+        .bind(run.id)
+        .bind(status)
+        .bind(run.current_step)
+        .bind(&run.context)
+        .bind(run.completed_at)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(PlatformError::NotFound("workflow_run"));
+        }
+        Ok(run)
     }
 }
 
@@ -1274,7 +2422,7 @@ impl ContentStore for InMemoryPersistence {
             .cloned()
             .collect();
 
-        entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.created_at));
 
         let offset = query.offset.unwrap_or(0) as usize;
         let limit = query.limit.unwrap_or(entries.len() as u32) as usize;
@@ -1370,7 +2518,7 @@ impl OrchestrationStore for InMemoryPersistence {
             })
             .cloned()
             .collect();
-        assignments.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        assignments.sort_by_key(|b| std::cmp::Reverse(b.created_at));
         Ok(assignments)
     }
 }
@@ -1449,7 +2597,7 @@ impl ModerationStore for InMemoryPersistence {
             })
             .cloned()
             .collect();
-        items.sort_by(|a, b| b.submitted_at.cmp(&a.submitted_at));
+        items.sort_by_key(|b| std::cmp::Reverse(b.submitted_at));
         Ok(items)
     }
 }
@@ -1482,7 +2630,7 @@ impl MessagingStore for InMemoryPersistence {
         state
             .messages_by_topic
             .entry(record.topic.clone())
-            .or_insert_with(VecDeque::new)
+            .or_default()
             .push_back(record.id);
         Ok(record)
     }
@@ -1528,6 +2676,198 @@ impl MessagingStore for InMemoryPersistence {
             if queue.is_empty() {
                 state.messages_by_topic.remove(topic);
             }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl UserStore for InMemoryPersistence {
+    async fn create_user(&self, user: User) -> PlatformResult<User> {
+        let mut state = self.state.write();
+        if state.users.contains_key(&user.id) {
+            return Err(PlatformError::Conflict("user"));
+        }
+        if state.users_by_email.contains_key(&user.email) {
+            return Err(PlatformError::Conflict("email"));
+        }
+        state.users_by_email.insert(user.email.clone(), user.id);
+        state.users.insert(user.id, user.clone());
+        Ok(user)
+    }
+
+    async fn get_user_by_id(&self, id: UserId) -> PlatformResult<Option<User>> {
+        Ok(self.state.read().users.get(&id).cloned())
+    }
+
+    async fn get_user_by_email(&self, email: &str) -> PlatformResult<Option<User>> {
+        let state = self.state.read();
+        if let Some(id) = state.users_by_email.get(email) {
+            return Ok(state.users.get(id).cloned());
+        }
+        Ok(None)
+    }
+
+    async fn list_users(&self, tenant_id: Option<TenantId>) -> PlatformResult<Vec<User>> {
+        let state = self.state.read();
+        let mut users: Vec<User> = state
+            .users
+            .values()
+            .filter(|&u| tenant_id.map(|t| u.tenant_id == Some(t)).unwrap_or(true))
+            .cloned()
+            .collect();
+        users.sort_by_key(|b| std::cmp::Reverse(b.created_at));
+        Ok(users)
+    }
+
+    async fn update_user(&self, user: User) -> PlatformResult<User> {
+        let mut state = self.state.write();
+        if !state.users.contains_key(&user.id) {
+            return Err(PlatformError::NotFound("user"));
+        }
+        // Clone old email before mutation to satisfy borrow checker
+        let old_email = state.users.get(&user.id).unwrap().email.clone();
+        if old_email != user.email {
+            state.users_by_email.remove(&old_email);
+            state.users_by_email.insert(user.email.clone(), user.id);
+        }
+        state.users.insert(user.id, user.clone());
+        Ok(user)
+    }
+
+    async fn update_password(&self, id: UserId, password_hash: String) -> PlatformResult<()> {
+        let mut state = self.state.write();
+        if let Some(user) = state.users.get_mut(&id) {
+            user.password_hash = password_hash;
+            user.updated_at = Utc::now();
+            Ok(())
+        } else {
+            Err(PlatformError::NotFound("user"))
+        }
+    }
+}
+
+#[async_trait]
+impl AsyncTenantStore for InMemoryPersistence {
+    async fn create_tenant(&self, tenant: Tenant) -> PlatformResult<Tenant> {
+        let mut state = self.state.write();
+        if state.tenants.contains_key(&tenant.id) {
+            return Err(PlatformError::Conflict("tenant"));
+        }
+        // Check slug uniqueness
+        if state.tenants.values().any(|t| t.slug == tenant.slug) {
+            return Err(PlatformError::Conflict("slug"));
+        }
+        state.tenants.insert(tenant.id, tenant.clone());
+        Ok(tenant)
+    }
+
+    async fn get_tenant(&self, id: TenantId) -> PlatformResult<Option<Tenant>> {
+        Ok(self.state.read().tenants.get(&id).cloned())
+    }
+
+    async fn get_tenant_by_slug(&self, slug: &str) -> PlatformResult<Option<Tenant>> {
+        Ok(self
+            .state
+            .read()
+            .tenants
+            .values()
+            .find(|t| t.slug == slug)
+            .cloned())
+    }
+
+    async fn list_tenants(&self, active_only: bool) -> PlatformResult<Vec<Tenant>> {
+        let state = self.state.read();
+        let iter = state.tenants.values();
+        if active_only {
+            Ok(iter.filter(|t| t.is_active).cloned().collect())
+        } else {
+            Ok(iter.cloned().collect())
+        }
+    }
+
+    async fn update_tenant(&self, tenant: Tenant) -> PlatformResult<Tenant> {
+        let mut state = self.state.write();
+        if !state.tenants.contains_key(&tenant.id) {
+            return Err(PlatformError::NotFound("tenant"));
+        }
+        state.tenants.insert(tenant.id, tenant.clone());
+        Ok(tenant)
+    }
+
+    async fn delete_tenant(&self, id: TenantId) -> PlatformResult<()> {
+        let mut state = self.state.write();
+        if state.tenants.remove(&id).is_none() {
+            return Err(PlatformError::NotFound("tenant"));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AsyncProjectStore for InMemoryPersistence {
+    async fn create_project(&self, project: Project) -> PlatformResult<Project> {
+        let mut state = self.state.write();
+        if state.projects.contains_key(&project.id) {
+            return Err(PlatformError::Conflict("project"));
+        }
+        // Check slug uniqueness within tenant
+        if state
+            .projects
+            .values()
+            .any(|p| p.tenant_id == project.tenant_id && p.slug == project.slug)
+        {
+            return Err(PlatformError::Conflict("slug"));
+        }
+        state.projects.insert(project.id, project.clone());
+        Ok(project)
+    }
+
+    async fn get_project(&self, id: ProjectId) -> PlatformResult<Option<Project>> {
+        Ok(self.state.read().projects.get(&id).cloned())
+    }
+
+    async fn get_project_by_slug(
+        &self,
+        tenant_id: TenantId,
+        slug: &str,
+    ) -> PlatformResult<Option<Project>> {
+        Ok(self
+            .state
+            .read()
+            .projects
+            .values()
+            .find(|p| p.tenant_id == tenant_id && p.slug == slug)
+            .cloned())
+    }
+
+    async fn list_projects(
+        &self,
+        tenant_id: TenantId,
+        active_only: bool,
+    ) -> PlatformResult<Vec<Project>> {
+        let state = self.state.read();
+        let iter = state.projects.values().filter(|p| p.tenant_id == tenant_id);
+        if active_only {
+            Ok(iter.filter(|p| p.is_active).cloned().collect())
+        } else {
+            Ok(iter.cloned().collect())
+        }
+    }
+
+    async fn update_project(&self, project: Project) -> PlatformResult<Project> {
+        let mut state = self.state.write();
+        if !state.projects.contains_key(&project.id) {
+            return Err(PlatformError::NotFound("project"));
+        }
+        state.projects.insert(project.id, project.clone());
+        Ok(project)
+    }
+
+    async fn delete_project(&self, id: ProjectId) -> PlatformResult<()> {
+        let mut state = self.state.write();
+        if state.projects.remove(&id).is_none() {
+            return Err(PlatformError::NotFound("project"));
         }
         Ok(())
     }

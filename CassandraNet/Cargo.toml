@@ -4,6 +4,7 @@ members = [
   "cnbackend",
   "cnlibfrontend",
   "cnclient",
+  "cncli",
 
   #Internal
   "cncommon",
@@ -21,12 +22,13 @@ config = "spellcheck.toml"
 name = "cassandra_net"
 version = "0.1.0"
 edition = "2021"
-authors = ["JailbreakPapa", "RamenG0D"]
+authors = ["JailbreakPapa"]
 homepage = "https://github.com/WatchDogStudios/CassandraNet"
 include = [
   "cnbackend/**",
   "cnlibfrontend/**",
   "cnclient/**",
+  "cncli/**",
   "cncommon/**",
   "core/**",
   "gateway/**",
