@@ -3,6 +3,7 @@ name = "cnsdk_c"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+description = "CassandraNet C SDK - FFI bindings for C/C++ integration"
 
 [lib]
 name = "cassandra_c"
@@ -11,3 +12,17 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 cncore = { path = "../core" }
 libc = "0.2"
+uuid = { version = "1", features = ["v4"] }
+serde_json = "1"
+tracing = "0.1"
+
+# Optional HTTP client for network mode
+reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+
+[features]
+default = []
+network = ["reqwest", "tokio"]
+
+[dev-dependencies]
+# For running integration tests

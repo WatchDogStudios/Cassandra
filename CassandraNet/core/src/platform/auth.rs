@@ -203,7 +203,7 @@ impl AuthService {
         OsRng.fill_bytes(&mut secret_bytes);
         let secret_b64 = URL_SAFE_NO_PAD.encode(secret_bytes);
         let id = Uuid::new_v4();
-        let token_prefix = format!("{}", &id.to_string()[..8]);
+        let token_prefix = id.to_string()[..8].to_string();
         let token_hash = hash_secret(&secret_b64);
         let now = Utc::now();
         let record = ApiKeyRecord {
@@ -469,13 +469,21 @@ mod tests {
         let api_store: Arc<dyn ApiKeyStore> = storage.clone();
         let secret = b"secret".to_vec();
         let service = AuthService::new(tenant_store.clone(), api_store, secret);
+        let now = Utc::now();
         let tenant_id = Uuid::new_v4();
         tenant_store
             .insert_tenant(Tenant {
                 id: tenant_id,
                 name: "Test".into(),
-                created_at: Utc::now(),
+                slug: "test".into(),
+                plan: "free".into(),
+                description: None,
                 settings: TenantSettings::default(),
+                quota_agents: 100,
+                quota_storage_bytes: 10737418240,
+                is_active: true,
+                created_at: now,
+                updated_at: now,
             })
             .unwrap();
         let key = service
@@ -497,20 +505,28 @@ mod tests {
         let secret = b"another-secret".to_vec();
         let service = AuthService::new(tenant_store.clone(), api_store, secret)
             .with_default_audience("cncore");
+        let now = Utc::now();
         let tenant_id = Uuid::new_v4();
         tenant_store
             .insert_tenant(Tenant {
                 id: tenant_id,
                 name: "Demo".into(),
-                created_at: Utc::now(),
+                slug: "demo".into(),
+                plan: "free".into(),
+                description: None,
                 settings: TenantSettings::default(),
+                quota_agents: 100,
+                quota_storage_bytes: 10737418240,
+                is_active: true,
+                created_at: now,
+                updated_at: now,
             })
             .unwrap();
         let context = AuthContext {
             principal_id: Uuid::new_v4(),
             principal_type: PrincipalType::Tenant,
             tenant_id,
-            scopes: vec![Scope::Admin],
+            scopes: vec![Scope::AdminRead, Scope::AdminWrite],
             issued_at: Utc::now(),
             expires_at: Utc::now(),
             audience: Some("cncore".into()),
@@ -538,13 +554,21 @@ mod tests {
         let api_store: Arc<dyn ApiKeyStore> = storage.clone();
         let secret = b"rotate-secret".to_vec();
         let service = AuthService::new(tenant_store.clone(), api_store.clone(), secret);
+        let now = Utc::now();
         let tenant_id = Uuid::new_v4();
         tenant_store
             .insert_tenant(Tenant {
                 id: tenant_id,
                 name: "Rotate".into(),
-                created_at: Utc::now(),
+                slug: "rotate".into(),
+                plan: "free".into(),
+                description: None,
                 settings: TenantSettings::default(),
+                quota_agents: 100,
+                quota_storage_bytes: 10737418240,
+                is_active: true,
+                created_at: now,
+                updated_at: now,
             })
             .unwrap();
         let key = service

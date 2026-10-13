@@ -406,8 +406,8 @@ impl OrchestrationEngine {
             }
             SchedulerStrategy::FairnessByKind => {
                 let last_kind = self.last_kind.read().clone();
-                let mut sorted = pending.iter().cloned().collect::<Vec<_>>();
-                sorted.sort_by(|a, b| a.scheduled_at.cmp(&b.scheduled_at));
+                let mut sorted = pending.to_vec();
+                sorted.sort_by_key(|a| a.scheduled_at);
                 let mut fallback = None;
                 for task in sorted.into_iter() {
                     if fallback.is_none() {
@@ -538,13 +538,21 @@ mod tests {
         let task_store: Arc<dyn TaskStore> = storage.clone();
         let workflow_store: Arc<dyn WorkflowStore> = storage.clone();
         let engine = OrchestrationEngine::new(task_store, workflow_store);
+        let now = Utc::now();
         let tenant_id = Uuid::new_v4();
         storage
             .insert_tenant(Tenant {
                 id: tenant_id,
                 name: "Tenant".into(),
-                created_at: Utc::now(),
+                slug: "tenant".into(),
+                plan: "free".into(),
+                description: None,
                 settings: TenantSettings::default(),
+                quota_agents: 100,
+                quota_storage_bytes: 10737418240,
+                is_active: true,
+                created_at: now,
+                updated_at: now,
             })
             .unwrap();
         let workflow = engine
@@ -580,13 +588,21 @@ mod tests {
         let task_store: Arc<dyn TaskStore> = storage.clone();
         let workflow_store: Arc<dyn WorkflowStore> = storage.clone();
         let engine = OrchestrationEngine::new(task_store, workflow_store);
+        let now = Utc::now();
         let tenant_id = Uuid::new_v4();
         storage
             .insert_tenant(Tenant {
                 id: tenant_id,
                 name: "Tenant".into(),
-                created_at: Utc::now(),
+                slug: "tenant".into(),
+                plan: "free".into(),
+                description: None,
                 settings: TenantSettings::default(),
+                quota_agents: 100,
+                quota_storage_bytes: 10737418240,
+                is_active: true,
+                created_at: now,
+                updated_at: now,
             })
             .unwrap();
 
@@ -623,13 +639,21 @@ mod tests {
         let task_store: Arc<dyn TaskStore> = storage.clone();
         let workflow_store: Arc<dyn WorkflowStore> = storage.clone();
         let engine = OrchestrationEngine::new(task_store, workflow_store);
+        let now = Utc::now();
         let tenant_id = Uuid::new_v4();
         storage
             .insert_tenant(Tenant {
                 id: tenant_id,
                 name: "Tenant".into(),
-                created_at: Utc::now(),
+                slug: "tenant".into(),
+                plan: "free".into(),
+                description: None,
                 settings: TenantSettings::default(),
+                quota_agents: 100,
+                quota_storage_bytes: 10737418240,
+                is_active: true,
+                created_at: now,
+                updated_at: now,
             })
             .unwrap();
 

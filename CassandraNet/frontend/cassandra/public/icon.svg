@@ -1,0 +1,28 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    @media (prefers-color-scheme: light) {
+      .background { fill: black; }
+      .foreground { fill: white; }
+    }
+    @media (prefers-color-scheme: dark) {
+      .background { fill: white; }
+      .foreground { fill: black; }
+    }
+  </style>
+  <g clip-path="url(#clip0_7960_43945)">
+    <rect class="background" width="32" height="32" rx="6" fill="url(#paint0_linear_favicon)"/>
+    <g style="transform: scale(95%); transform-origin: center; mix-blend-mode:overlay">
+      <path class="foreground"
+        d="M10 20C15 20 17 12 22 12C23.0609 12 24.0783 12.4214 24.8284 13.1716C25.5786 13.9217 26 14.9391 26 16C26 17.0609 25.5786 18.0783 24.8284 18.8284C24.0783 19.5786 23.0609 20 22 20C17 20 15 12 10 12C8.93913 12 7.92172 12.4214 7.17157 13.1716C6.42143 13.9217 6 14.9391 6 16C6 17.0609 6.42143 18.0783 7.17157 18.8284C7.92172 19.5786 8.93913 20 10 20Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    </g>
+  </g>
+  <defs>
+    <clipPath id="clip0_7960_43945">
+      <rect width="32" height="32" fill="white" />
+    </clipPath>
+    <linearGradient id="paint0_linear_favicon" x1="-6.71649" y1="-6.50557" x2="40.2469" y2="48.5087" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#225EDF"/>
+      <stop offset="1" stop-color="#133379"/>
+    </linearGradient>
+  </defs>
+</svg>

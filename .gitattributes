@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# sqlx checksums migration bytes; keep them identical on every platform.
+CassandraNet/core/migrations/*.sql text eol=lf

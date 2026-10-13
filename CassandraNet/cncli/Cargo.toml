@@ -1,0 +1,27 @@
+[package]
+name = "cncli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["WD Studios L.L.C."]
+description = "CassandraNet CLI - Command-line interface for managing tenants, projects, agents, and tasks"
+
+[[bin]]
+name = "cncli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+tabled = "0.16"
+chrono = { version = "0.4", features = ["serde"] }
+
+[features]
+default = []

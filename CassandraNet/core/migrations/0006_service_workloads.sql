@@ -1,10 +1,12 @@
+-- tenants/projects are created in 0010; the foreign keys to them are added in
+-- 0014 (this migration originally referenced them before they existed).
 -- Orchestration assignments store
 CREATE TABLE IF NOT EXISTS orchestration_assignments (
     id UUID PRIMARY KEY,
     agent_id UUID NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     workload_id TEXT NOT NULL,
-    tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL,
-    project_id UUID REFERENCES projects(id) ON DELETE SET NULL,
+    tenant_id UUID,
+    project_id UUID,
     status TEXT NOT NULL,
     status_message TEXT,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -24,8 +26,8 @@ CREATE INDEX IF NOT EXISTS idx_orchestration_assignments_status
 -- UGC moderation content store
 CREATE TABLE IF NOT EXISTS ugc_moderation_content (
     id UUID PRIMARY KEY,
-    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL,
+    project_id UUID NOT NULL,
     filename TEXT NOT NULL,
     mime_type TEXT,
     size_bytes BIGINT,
@@ -47,8 +49,8 @@ CREATE INDEX IF NOT EXISTS idx_ugc_moderation_content_state
 -- Messaging queue store
 CREATE TABLE IF NOT EXISTS messaging_messages (
     id UUID PRIMARY KEY,
-    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL,
+    project_id UUID NOT NULL,
     topic TEXT NOT NULL,
     key TEXT,
     payload BYTEA NOT NULL,

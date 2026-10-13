@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "eslint src"
   },
   "dependencies": {
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "react-router-dom": "6.28.0",
     "@tanstack/react-query": "5.51.1"
   },
   "devDependencies": {
@@ -18,9 +20,11 @@
     "@types/react": "18.2.66",
     "@types/react-dom": "18.2.23",
     "vite": "5.2.0",
-  "@typescript-eslint/parser": "7.17.0",
-  "@typescript-eslint/eslint-plugin": "7.17.0",
-  "eslint": "8.57.0",
+    "@eslint/js": "9.17.0",
+    "typescript-eslint": "8.18.2",
+    "eslint": "9.17.0",
+    "eslint-plugin-react-hooks": "5.1.0",
+    "eslint-plugin-react-refresh": "0.4.16",
     "@vitejs/plugin-react": "4.2.1"
   }
 }

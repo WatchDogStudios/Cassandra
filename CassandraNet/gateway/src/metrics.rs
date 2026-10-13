@@ -1,4 +1,4 @@
-use crate::auth::{validate_api_key, validate_jwt, AuthStatus};
+use crate::auth::{has_scope, validate_api_key, validate_jwt};
 use axum::{
     body::Body,
     http::{HeaderValue, Request},
@@ -97,27 +97,43 @@ where
         };
         let method = req.method().as_str().to_owned();
         let path = normalize_path(req.uri().path()).into_owned();
-        let is_public = matches!(
-            path.as_str(),
-            "/health" | "/version" | "/metrics" | "/docs" | "/api-docs/openapi.json"
-        );
+        let is_docs = path == "/api-doc/openapi.json"
+            || path == "/api-docs/openapi.json"
+            || path.starts_with("/docs");
+
+        let is_public = matches!(path.as_str(), "/health" | "/version" | "/metrics")
+            || path.starts_with("/auth/");
         if !is_public {
-            match (validate_api_key(req.headers()), validate_jwt(req.headers())) {
-                (AuthStatus::Allow, _) | (_, AuthStatus::Allow) => {}
-                _ => {
-                    let resp = axum::response::Response::builder()
-                        .status(axum::http::StatusCode::UNAUTHORIZED)
-                        .header("x-request-id", &rid)
-                        .body(axum::body::Body::from("unauthorized"))
-                        .unwrap();
-                    REQ_COUNTER
-                        .with_label_values(&[&method, &path, "401"])
-                        .inc();
-                    ERROR_5XX_COUNTER
-                        .with_label_values(&[&method, &path, "401"])
-                        .inc();
-                    return Box::pin(async move { Ok(resp) });
-                }
+            let api = validate_api_key(req.headers());
+            let jwt = if api.allowed {
+                None
+            } else {
+                Some(validate_jwt(req.headers()))
+            };
+            let authorized = api.allowed || jwt.as_ref().is_some_and(|s| s.allowed);
+            if !authorized {
+                let resp = axum::response::Response::builder()
+                    .status(axum::http::StatusCode::UNAUTHORIZED)
+                    .header("x-request-id", &rid)
+                    .body(axum::body::Body::from("unauthorized"))
+                    .unwrap();
+                REQ_COUNTER
+                    .with_label_values(&[&method, &path, "401"])
+                    .inc();
+                return Box::pin(async move { Ok(resp) });
+            }
+
+            // Docs/OpenAPI are further restricted by an explicit scope.
+            if is_docs && !has_scope(req.headers(), "docs:read") {
+                let resp = axum::response::Response::builder()
+                    .status(axum::http::StatusCode::FORBIDDEN)
+                    .header("x-request-id", &rid)
+                    .body(axum::body::Body::from("forbidden"))
+                    .unwrap();
+                REQ_COUNTER
+                    .with_label_values(&[&method, &path, "403"])
+                    .inc();
+                return Box::pin(async move { Ok(resp) });
             }
         }
         req.headers_mut().insert(

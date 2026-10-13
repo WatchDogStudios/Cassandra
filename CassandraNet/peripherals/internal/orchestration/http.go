@@ -133,17 +133,17 @@ func (s *Service) handleUpdate(w http.ResponseWriter, r *http.Request, id string
 // ParseStatus parses a string into a Status value.
 func ParseStatus(status string) (Status, error) {
 	switch strings.ToLower(status) {
-	case string(StatusPending), "pending":
+	case string(StatusPending):
 		return StatusPending, nil
-	case string(StatusAssigned), "assigned":
+	case string(StatusAssigned):
 		return StatusAssigned, nil
-	case string(StatusRunning), "in_progress", "running":
+	case string(StatusRunning), "running":
 		return StatusRunning, nil
-	case string(StatusCompleted), "completed":
+	case string(StatusCompleted):
 		return StatusCompleted, nil
-	case string(StatusFailed), "failed":
+	case string(StatusFailed):
 		return StatusFailed, nil
-	case string(StatusCancelled), "cancelled", "canceled":
+	case string(StatusCancelled), "canceled":
 		return StatusCancelled, nil
 	default:
 		return "", errors.New("unknown status")

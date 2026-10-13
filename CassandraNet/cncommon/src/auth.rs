@@ -5,13 +5,20 @@ use std::sync::OnceLock;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Scope {
     Admin,
+    AdminRead,
+    AdminWrite,
+    DocsRead,
     TenantRead,
     TenantWrite,
     ProvisioningManage,
     OrchestrationManage,
     ApiKeyManage,
     AgentExecute,
+    AgentRead,
     WorkflowExecute,
+    UgcRead,
+    UgcWrite,
+    ObservabilityRead,
     Custom(String),
 }
 
@@ -19,13 +26,20 @@ impl Scope {
     pub fn as_str(&self) -> &str {
         match self {
             Scope::Admin => "admin",
+            Scope::AdminRead => "admin:read",
+            Scope::AdminWrite => "admin:write",
+            Scope::DocsRead => "docs:read",
             Scope::TenantRead => "tenant:read",
             Scope::TenantWrite => "tenant:write",
             Scope::ProvisioningManage => "provisioning:manage",
             Scope::OrchestrationManage => "orchestration:manage",
             Scope::ApiKeyManage => "apikey:manage",
             Scope::AgentExecute => "agent:execute",
+            Scope::AgentRead => "agent:read",
             Scope::WorkflowExecute => "workflow:execute",
+            Scope::UgcRead => "ugc:read",
+            Scope::UgcWrite => "ugc:write",
+            Scope::ObservabilityRead => "observability:read",
             Scope::Custom(value) => value.as_str(),
         }
     }
@@ -34,16 +48,23 @@ impl Scope {
         matches!(self, Scope::Custom(_))
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn from_name(value: &str) -> Self {
         match value {
             "admin" => Scope::Admin,
+            "admin:read" => Scope::AdminRead,
+            "admin:write" => Scope::AdminWrite,
+            "docs:read" => Scope::DocsRead,
             "tenant:read" => Scope::TenantRead,
             "tenant:write" => Scope::TenantWrite,
             "provisioning:manage" => Scope::ProvisioningManage,
             "orchestration:manage" => Scope::OrchestrationManage,
             "apikey:manage" => Scope::ApiKeyManage,
             "agent:execute" => Scope::AgentExecute,
+            "agent:read" => Scope::AgentRead,
             "workflow:execute" => Scope::WorkflowExecute,
+            "ugc:read" => Scope::UgcRead,
+            "ugc:write" => Scope::UgcWrite,
+            "observability:read" => Scope::ObservabilityRead,
             other => Scope::Custom(other.to_string()),
         }
     }
@@ -63,13 +84,13 @@ impl From<Scope> for String {
 
 impl From<&str> for Scope {
     fn from(value: &str) -> Self {
-        Scope::from_str(value)
+        Scope::from_name(value)
     }
 }
 
 impl From<String> for Scope {
     fn from(value: String) -> Self {
-        Scope::from_str(&value)
+        Scope::from_name(&value)
     }
 }
 
@@ -108,7 +129,22 @@ impl ScopeRegistry {
         self.roles.push(Role {
             name: "admin".to_string(),
             description: Some("Full administrative access".to_string()),
-            scopes: vec![Scope::Admin],
+            // Note: docs access is intentionally NOT included by default.
+            scopes: vec![
+                Scope::AdminRead,
+                Scope::AdminWrite,
+                Scope::TenantRead,
+                Scope::TenantWrite,
+                Scope::ProvisioningManage,
+                Scope::OrchestrationManage,
+                Scope::ApiKeyManage,
+                Scope::AgentRead,
+                Scope::AgentExecute,
+                Scope::WorkflowExecute,
+                Scope::UgcRead,
+                Scope::UgcWrite,
+                Scope::ObservabilityRead,
+            ],
         });
         self.roles.push(Role {
             name: "operator".to_string(),
